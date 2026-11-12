@@ -1,0 +1,18 @@
+{
+  "name": "crditeach",
+  "version": "1.0.0",
+  "description": "Crditeach - Peer Skill-Sharing & Knowledge Exchange Platform with User Authentication & Data Persistence",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^17.3.1",
+    "express": "^4.21.2"
+  }
+}
