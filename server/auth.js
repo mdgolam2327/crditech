@@ -424,6 +424,9 @@ export async function handleLogin(req, res) {
         email: user.email,
         phone: user.phone,
         address: user.address || '',
+        avatar: user.avatar || '',
+        bio: user.bio || '',
+        skills: user.skills || '',
         createdAt: user.created_at,
         lastLoginAt: now
       }
@@ -504,7 +507,7 @@ export function handleGetMe(req, res) {
 
     const now = new Date().toISOString();
     const session = db.prepare(`
-      SELECT s.*, u.full_name, u.email, u.phone, u.address, u.created_at, u.last_login_at
+      SELECT s.*, u.full_name, u.email, u.phone, u.address, u.avatar, u.bio, u.skills, u.created_at, u.last_login_at
       FROM user_sessions s
       JOIN users u ON s.user_id = u.id
       WHERE s.session_id = ? AND s.expires_at > ?
@@ -526,6 +529,9 @@ export function handleGetMe(req, res) {
         email: session.email,
         phone: session.phone,
         address: session.address || '',
+        avatar: session.avatar || '',
+        bio: session.bio || '',
+        skills: session.skills || '',
         createdAt: session.created_at,
         lastLoginAt: session.last_login_at
       }

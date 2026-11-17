@@ -1,20 +1,18 @@
 /**
- * NAVBAR COMPONENT
- * Handles live credit counter, persona switcher (Teacher vs Learner),
- * tab routing, and responsive Sign In / Register / Profile triggers.
+- NAVBAR COMPONENT
+- Handles live credit counter, tab routing, upload/live dropdown,
+- and responsive Sign In / Register / Profile triggers.
  */
 
 import { state } from '../state.js';
 import { auth } from '../auth.js';
-import { openAuthModal, openProfileModal } from './authModal.js';
+import { openOwnProfile } from './profileView.js';
+import { openAuthModal } from './authModal.js';
 
 export function initNavbar(onNavigate) {
   const navButtons = document.querySelectorAll('.nav-btn');
   const userCreditsEl = document.getElementById('user-credits');
   const userCashEl = document.getElementById('user-cash');
-  const personaToggleBtn = document.getElementById('persona-toggle');
-  const personaIndicator = document.getElementById('persona-indicator');
-  const personaText = document.getElementById('persona-text');
   const enrolledBadge = document.getElementById('enrolled-badge');
   const brandLogo = document.getElementById('brand-logo');
   const walletWidget = document.getElementById('wallet-widget');
@@ -30,7 +28,7 @@ export function initNavbar(onNavigate) {
   // Auth Button Handlers
   btnHeaderLogin?.addEventListener('click', () => openAuthModal('login'));
   btnHeaderRegister?.addEventListener('click', () => openAuthModal('register'));
-  btnOpenProfile?.addEventListener('click', () => onNavigate('profile'));
+  btnOpenProfile?.addEventListener('click', () => openOwnProfile());
 
   // Navigation tab clicks
   navButtons.forEach(btn => {
@@ -50,18 +48,6 @@ export function initNavbar(onNavigate) {
     openWalletModal();
   });
 
-  // Persona / Role Switcher (Teacher vs Learner)
-  personaToggleBtn?.addEventListener('click', () => {
-    const newRole = state.toggleRole();
-    window.showToast(
-      'Role Switched',
-      newRole === 'teacher'
-        ? '⚡ You are in Teacher Mode! Teach peers to use Crditeach for free and earn Credits.'
-        : '🎓 You are in Pure Learner Mode! Fees apply unless you teach someone.',
-      'info'
-    );
-  });
-
   // Update UI when state or auth changes
   function updateNavUI(appState) {
     if (userCreditsEl) userCreditsEl.textContent = appState.user.credits;
@@ -73,19 +59,37 @@ export function initNavbar(onNavigate) {
       if (authGuestControls) authGuestControls.style.display = 'none';
       if (authUserControls) authUserControls.style.display = 'flex';
       if (userDisplayName) userDisplayName.textContent = auth.user.fullName || 'Member';
+
+      // Sync real user avatar into the Navbar Profile button
+      const displayName = auth.user?.fullName || appState.user?.name || 'Member';
+      const fallbackAvatar = `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(displayName)}`;
+      const resolvedAvatar = (auth.user?.avatar || appState.user?.avatar || fallbackAvatar).trim();
+
+      if (btnOpenProfile) {
+        // Hide any existing default SVG, icon, or emoji span inside the profile button (keep only #user-display-name)
+        Array.from(btnOpenProfile.children).forEach(child => {
+          if (child.id !== 'user-display-name' && !child.classList.contains('nav-user-avatar-img')) {
+            child.style.display = 'none';
+          }
+        });
+
+        let navAvatarImg = btnOpenProfile.querySelector('.nav-user-avatar-img');
+        if (!navAvatarImg) {
+          navAvatarImg = document.createElement('img');
+          navAvatarImg.className = 'nav-user-avatar-img';
+          navAvatarImg.style.cssText = 'width: 28px; height: 28px; min-width: 28px; border-radius: 50%; object-fit: cover; border: 1.5px solid rgba(56, 189, 248, 0.6); display: inline-block; vertical-align: middle;';
+          btnOpenProfile.prepend(navAvatarImg);
+        }
+        navAvatarImg.src = resolvedAvatar;
+        navAvatarImg.alt = displayName;
+        navAvatarImg.onerror = () => {
+          navAvatarImg.onerror = null;
+          navAvatarImg.src = fallbackAvatar;
+        };
+      }
     } else {
       if (authGuestControls) authGuestControls.style.display = 'flex';
       if (authUserControls) authUserControls.style.display = 'none';
-    }
-
-    if (personaIndicator && personaText) {
-      if (appState.user.role === 'teacher') {
-        personaIndicator.className = 'persona-indicator teacher-active';
-        personaText.textContent = 'Teacher Mode';
-      } else {
-        personaIndicator.className = 'persona-indicator learner-active';
-        personaText.textContent = 'Learner Mode';
-      }
     }
 
     // Animate wallet numbers on change

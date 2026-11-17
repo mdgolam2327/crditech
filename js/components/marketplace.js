@@ -1,510 +1,396 @@
 /**
- * MARKETPLACE COMPONENT
- * Explore, filter, search and enroll in skill courses with Credits or Learner Cash
+- MARKETPLACE & MAIN FEED COMPONENT (YOUTUBE HOME GRID STYLE)
+- Exact 3 videos per row on desktop
+- Compact 175px thumbnail height + YouTube-style Avatar, Title, Channel Name, Views & Time
+- Includes universal 3-dot video menu (Playlist, Share/Copy Link, Download, Interest, Report, and Owner-only Edit/Delete)
  */
 
 import { state } from '../state.js';
+import { auth } from '../auth.js';
+import { openCreatorChannel } from './profileView.js';
+import {
+  renderVideoThreeDotMenu,
+  bindVideoThreeDotListeners,
+  getSavedPlaylistIds,
+  getNotInterestedIds
+} from './videoActions.js';
 
-let activeCategory = 'all';
-let activePriceFilter = 'all';
-let searchQuery = '';
 let navigateCallback = null;
+
+function formatTimeAgo(dateString) {
+  if (!dateString) return 'Recently';
+  const date = new Date(dateString);
+  if (isNaN(date.getTime())) return 'Recently';
+
+  const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (seconds < 60) return 'Just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  const months = Math.floor(days / 30);
+  return `${months}mo ago`;
+}
 
 export function initMarketplace(onNavigate) {
   navigateCallback = onNavigate;
-  const grid = document.getElementById('courses-grid');
+
+  const coursesGrid = document.getElementById('courses-grid');
+  const liveShortsMount = document.getElementById('live-shorts-mount');
   const searchInput = document.getElementById('marketplace-search');
   const clearSearchBtn = document.getElementById('clear-search');
-  const catPills = document.querySelectorAll('.cat-pill');
-  const filterChips = document.querySelectorAll('.filter-chip');
-  const totalCoursesEl = document.getElementById('stats-total-courses');
+  const categoryChipsContainer = document.getElementById('category-chips');
 
-  // Search input handler
-  searchInput.addEventListener('input', (e) => {
-    searchQuery = e.target.value.toLowerCase().trim();
-    clearSearchBtn.style.display = searchQuery ? 'block' : 'none';
-    renderCourses();
-  });
+  let currentCategory = 'all';
+  let currentPriceFilter = 'all';
+  let currentSearch = '';
+  let searchDebounceTimer = null;
 
-  clearSearchBtn.addEventListener('click', () => {
-    searchInput.value = '';
-    searchQuery = '';
-    clearSearchBtn.style.display = 'none';
-    renderCourses();
-  });
-
-  // Category filter clicks
-  catPills.forEach(pill => {
-    pill.addEventListener('click', () => {
-      catPills.forEach(p => p.classList.remove('active'));
-      pill.classList.add('active');
-      activeCategory = pill.getAttribute('data-category');
-      renderCourses();
-    });
-  });
-
-  // Price filter clicks
-  filterChips.forEach(chip => {
-    chip.addEventListener('click', () => {
-      filterChips.forEach(c => c.classList.remove('active'));
-      chip.classList.add('active');
-      activePriceFilter = chip.getAttribute('data-price-filter');
-      renderCourses();
-    });
-  });
-
-  function updateQuickStats() {
-    const stats = state.getPlatformStats ? state.getPlatformStats() : {
-      totalCourses: state.courses.length,
-      totalStudents: state.user.studentsTaught,
-      totalCreditsCirculated: state.user.totalCreditsEarned,
-      adInterruptions: 0
-    };
-
-    if (totalCoursesEl) {
-      totalCoursesEl.textContent = stats.totalCourses;
-    }
-    const studentsEl = document.getElementById('stats-students-taught');
-    if (studentsEl) {
-      studentsEl.textContent = stats.totalStudents.toLocaleString();
-    }
-    const creditsEl = document.getElementById('stats-credits-circulated');
-    if (creditsEl) {
-      creditsEl.textContent = `${stats.totalCreditsCirculated.toLocaleString()} ₢`;
-    }
+  // Automatically add "Saved Playlist" pill to category bar if not already present
+  if (categoryChipsContainer && !categoryChipsContainer.querySelector('[data-category="saved-playlist"]')) {
+    const playlistPill = document.createElement('button');
+    playlistPill.type = 'button';
+    playlistPill.className = 'cat-pill';
+    playlistPill.setAttribute('data-category', 'saved-playlist');
+    playlistPill.textContent = '🔖 Saved Playlist';
+    categoryChipsContainer.appendChild(playlistPill);
   }
 
-  function renderCourses() {
-    let filtered = state.courses;
+  function renderMarketplace() {
+    // 1. Update Live Stats Bar in index.html
+    const totalCoursesEl = document.getElementById('stats-total-courses');
+    if (totalCoursesEl) totalCoursesEl.textContent = state.courses.length;
 
-    // Filter by category
-    if (activeCategory !== 'all') {
-      filtered = filtered.filter(c => c.category === activeCategory);
-    }
-
-    // Filter by pricing model
-    if (activePriceFilter === 'credits') {
-      filtered = filtered.filter(c => c.pricingModel === 'credit-only' || (c.pricingModel === 'dual' && c.creditPrice > 0));
-    } else if (activePriceFilter === 'free') {
-      filtered = filtered.filter(c => c.pricingModel === 'free' || c.creditPrice === 0);
-    } else if (activePriceFilter === 'paid') {
-      filtered = filtered.filter(c => c.cashFee && c.cashFee > 0);
-    }
-
-    // Filter by search query
-    if (searchQuery) {
-      filtered = filtered.filter(c =>
-        c.title.toLowerCase().includes(searchQuery) ||
-        c.desc.toLowerCase().includes(searchQuery) ||
-        c.instructor.name.toLowerCase().includes(searchQuery) ||
-        c.categoryName.toLowerCase().includes(searchQuery)
-      );
-    }
-
-    // Dynamically update quick-stats strip
-    updateQuickStats();
-
-    // DAY 0 GENESIS: If platform has zero courses published yet
-    if (state.courses.length === 0) {
-      if (totalCoursesEl) totalCoursesEl.textContent = '0';
-      grid.innerHTML = `
-        <div class="genesis-zero-card">
-          <div class="genesis-badge">
-            <span class="pulse-dot"></span>
-            <span>Platform Genesis • All Things Started At Zero</span>
-          </div>
-          <h2 class="genesis-title">Be the Founding Teacher on Crditeach</h2>
-          <p class="genesis-desc">
-            Welcome to the starting point of the peer-to-peer knowledge network. 
-            All teachers, classes, and credit balances start clean at zero. 
-            Share what you know to earn Credits, build your teacher reputation, and learn from fellow peers with <strong>zero in-video ads</strong>.
-          </p>
-
-          <div class="genesis-actions-row">
-            <button class="btn btn-primary btn-glow" id="genesis-publish-btn">
-              + Publish First Skill Session
-            </button>
-            <button class="btn btn-emerald" id="genesis-teach-btn">
-              ⚡ Teach a Student (+50 ₢)
-            </button>
-            <button class="btn btn-secondary" id="genesis-seed-btn" title="Populate sample demo courses for preview">
-              📦 Load Sample Courses
-            </button>
-          </div>
-
-          <div class="genesis-perks-row">
-            <div class="genesis-perk">
-              <span class="gp-icon">🛡️</span>
-              <div>
-                <strong>0 In-Video Ads</strong>
-                <span>100% distraction-free video player</span>
+    // 2. Render YouTube Shorts-Style "Live Now" Bar (ONLY active live streams)
+    if (liveShortsMount) {
+      const activeLiveItems = state.courses.filter(c => Boolean(c.isLive));
+      if (activeLiveItems.length > 0) {
+        liveShortsMount.innerHTML = `
+          <div class="live-shorts-section">
+            <div class="live-shorts-header">
+              <div class="live-shorts-title">
+                <span style="color: #ef4444; font-size: 1.4rem;">⚡</span>
+                <span>Live Now (${activeLiveItems.length})</span>
               </div>
-            </div>
-            <div class="genesis-perk">
-              <span class="gp-icon">⚡</span>
-              <div>
-                <strong>Earn by Teaching</strong>
-                <span>+50 ₢ per student mentorship</span>
-              </div>
-            </div>
-            <div class="genesis-perk">
-              <span class="gp-icon">🤝</span>
-              <div>
-                <strong>Peer Fair-Share</strong>
-                <span>Unlock courses with earned credits</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      `;
-
-      const publishBtn = document.getElementById('genesis-publish-btn');
-      if (publishBtn) {
-        publishBtn.addEventListener('click', () => {
-          const modal = document.getElementById('publish-modal');
-          if (modal) modal.classList.add('open');
-        });
-      }
-
-      const teachBtn = document.getElementById('genesis-teach-btn');
-      if (teachBtn) {
-        teachBtn.addEventListener('click', () => {
-          const res = state.teachStudentSimulation('Jordan Lee', 'Fullstack Architecture');
-          window.showToast('🎉 Mentorship Complete!', `Taught Jordan Lee. You earned +${res.earnedCredits} Credits!`, 'success');
-          renderCourses();
-        });
-      }
-
-      const seedBtn = document.getElementById('genesis-seed-btn');
-      if (seedBtn) {
-        seedBtn.addEventListener('click', () => {
-          state.loadSampleCourses();
-          window.showToast('Sample Courses Loaded', '6 demo courses loaded.', 'info');
-          renderCourses();
-        });
-      }
-
-      return;
-    }
-
-    if (totalCoursesEl) {
-      totalCoursesEl.textContent = filtered.length;
-    }
-
-    if (filtered.length === 0) {
-      grid.innerHTML = `
-        <div style="grid-column: 1 / -1; text-align: center; padding: 60px 20px; background: var(--bg-card); border-radius: var(--radius-lg); border: 1px solid var(--border-glass);">
-          <div style="font-size: 2.5rem; margin-bottom: 12px;">🔍</div>
-          <h3>No matching skill sessions found</h3>
-          <p style="color: var(--text-secondary); margin-top: 6px;">Try adjusting your search terms or clearing the pricing filter.</p>
-          <button class="btn btn-secondary" style="margin-top: 16px;" id="reset-filters-btn">Reset All Filters</button>
-        </div>
-      `;
-      const resetBtn = document.getElementById('reset-filters-btn');
-      if (resetBtn) {
-        resetBtn.addEventListener('click', () => {
-          searchInput.value = '';
-          searchQuery = '';
-          clearSearchBtn.style.display = 'none';
-          activeCategory = 'all';
-          activePriceFilter = 'all';
-          catPills.forEach(p => p.classList.remove('active'));
-          catPills[0].classList.add('active');
-          filterChips.forEach(c => c.classList.remove('active'));
-          filterChips[0].classList.add('active');
-          renderCourses();
-        });
-      }
-      return;
-    }
-
-    grid.innerHTML = filtered.map(course => {
-      const isEnrolled = state.enrolledCourseIds.includes(course.id);
-      let priceMarkup = '';
-
-      if (course.pricingModel === 'free') {
-        priceMarkup = `
-          <div class="credit-price-tag">
-            <span>Free Community Gift</span>
-          </div>
-          <span class="learner-cash-sub">No fee or credits required</span>
-        `;
-      } else if (course.pricingModel === 'credit-only') {
-        priceMarkup = `
-          <div class="credit-price-tag">
-            <span>₢ ${course.creditPrice}</span>
-            <span class="free-sub">Credits Only</span>
-          </div>
-          <span class="learner-cash-sub">Exclusive peer teacher exchange</span>
-        `;
-      } else {
-        priceMarkup = `
-          <div class="credit-price-tag">
-            <span>₢ ${course.creditPrice}</span>
-            <span class="free-sub">or Free with Teaching</span>
-          </div>
-          <span class="learner-cash-sub">Learner Fee: $${course.cashFee.toFixed(2)} USD</span>
-        `;
-      }
-
-      return `
-        <div class="course-card" data-course-id="${course.id}">
-          <div class="course-thumbnail-wrap">
-            <img src="${course.thumbnail}" alt="${course.title}" class="course-thumbnail" loading="lazy" />
-            <div class="ad-free-floating-badge">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
-                <polyline points="20 6 9 17 4 12"></polyline>
-              </svg>
-              <span>100% Ad-Free Video</span>
-            </div>
-            <span class="format-badge">${course.format}</span>
-          </div>
-
-          <div class="course-body">
-            <span class="course-category-tag">${course.categoryName}</span>
-            <h3 class="course-title">${course.title}</h3>
-            <p class="course-desc">${course.desc}</p>
-
-            <div class="course-instructor-row">
-              <div class="instructor-meta">
-                <img src="${course.instructor.avatar}" alt="${course.instructor.name}" class="instructor-pic" />
-                <div>
-                  <span class="instructor-name">${course.instructor.name}</span>
-                  <span class="instructor-rank">${course.instructor.tier}</span>
-                </div>
-              </div>
-              <span class="students-taught-count" title="Students this mentor has taught">
-                🎓 ${course.instructor.studentsTaught} Taught
+              <span style="font-size: 0.8rem; color: var(--text-secondary);">
+                Happening right now • Click to join live class
               </span>
             </div>
-
-            <div class="course-footer">
-              <div class="pricing-badges">
-                ${priceMarkup}
-              </div>
-              <button class="btn-enroll ${isEnrolled ? 'enrolled-btn' : ''}" data-enroll-id="${course.id}">
-                ${isEnrolled ? '▶ Classroom' : 'Explore Skill'}
-              </button>
+            <div class="live-shorts-row">
+              ${activeLiveItems.map(item => {
+                const isMyLive = auth.isAuthenticated() && (item.userId === auth.user?.id || item.instructor?.name === auth.user?.fullName);
+                return `
+                  <div class="short-live-card is-streaming" data-short-id="${item.id}" style="position: relative;">
+                    <img src="${item.thumbnail}" alt="${item.title}" class="short-live-thumb" />
+                    <div class="short-live-overlay">
+                      <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+                        <span class="short-badge-live">● LIVE NOW</span>
+                        ${isMyLive ? `
+                          <button 
+                            class="btn-quick-end-live" 
+                            data-end-id="${item.id}"
+                            title="End this live stream"
+                            style="background: #ef4444; color: #fff; border: none; border-radius: 6px; padding: 3px 8px; font-size: 0.7rem; font-weight: 700; cursor: pointer; z-index: 5;"
+                          >
+                            ⏹ End
+                          </button>
+                        ` : ''}
+                      </div>
+                      <div class="short-live-info">
+                        <h4>${item.title}</h4>
+                        <div class="short-live-meta">
+                          <span>${item.instructor.name}</span>
+                          <span>👁️ ${item.views || 0}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                `;
+              }).join('')}
             </div>
           </div>
+        `;
+      } else {
+        liveShortsMount.innerHTML = '';
+      }
+    }
+
+    // 3. Filter Main Feed Grid (3 videos per row YouTube Home style)
+    if (!coursesGrid) return;
+
+    const hiddenIds = getNotInterestedIds();
+    const savedIds = getSavedPlaylistIds();
+
+    const filteredCourses = state.courses.filter(course => {
+      if (course.isLive) return false;
+      if (hiddenIds.includes(course.id)) return false;
+
+      if (currentCategory === 'saved-playlist') {
+        return savedIds.includes(course.id);
+      }
+
+      const catMatch = currentCategory === 'all' || course.category === currentCategory;
+
+      let priceMatch = true;
+      if (currentPriceFilter === 'free') {
+        priceMatch = course.pricingModel === 'free' || course.creditPrice === 0;
+      } else if (currentPriceFilter === 'credits') {
+        priceMatch = course.creditPrice > 0;
+      } else if (currentPriceFilter === 'paid') {
+        priceMatch = course.cashFee > 0;
+      }
+
+      return catMatch && priceMatch;
+    });
+
+    if (filteredCourses.length === 0) {
+      const emptyMsg = currentCategory === 'saved-playlist'
+        ? 'No videos saved in your playlist yet. Click the ⋮ icon on any video to save it!'
+        : `No videos available yet ${currentSearch ? `for "${currentSearch}"` : ''}`;
+
+      coursesGrid.innerHTML = `
+        <div style="grid-column: 1 / -1; text-align: center; padding: 50px 20px; background: var(--bg-card); border-radius: 16px; border: 1px solid var(--border-glass);">
+          <div style="font-size: 2.2rem; margin-bottom: 8px;">${currentCategory === 'saved-playlist' ? '🔖' : '📺'}</div>
+          <h3 style="font-size: 1.1rem; color: var(--text-pure);">${emptyMsg}</h3>
+          <p style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 6px;">
+            ${currentCategory === 'saved-playlist'
+              ? 'Saved videos appear here for quick access anytime.'
+              : 'Click <strong>+ Create</strong> in the top bar to upload a video or start a live session!'}
+          </p>
         </div>
       `;
-    }).join('');
+    } else {
+      coursesGrid.innerHTML = filteredCourses.map(course => {
+        const isEnrolled = (state.user?.enrolledCourseIds || []).includes(course.id);
+        const isFree = course.pricingModel === 'free' || course.creditPrice === 0;
+        const timeAgo = formatTimeAgo(course.createdAt);
 
-    // Attach card click handlers
-    document.querySelectorAll('.course-card').forEach(card => {
-      const courseId = card.getAttribute('data-course-id');
-      card.addEventListener('click', (e) => {
-        // If clicking on the action button directly
-        if (e.target.closest('.enrolled-btn')) {
-          state.setActiveCourse(courseId);
-          if (navigateCallback) navigateCallback('classroom');
-          return;
+        // Resolve the freshest avatar for each video card
+        const isCurrentUserVideo =
+          auth.isAuthenticated() &&
+          auth.user &&
+          ((course.userId && String(course.userId) === String(auth.user.id)) ||
+            course.instructor?.name === auth.user.fullName);
+
+        const fallbackAvatar = `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(
+          course.instructor?.name || 'Creator'
+        )}`;
+
+        const resolvedAvatar =
+          (isCurrentUserVideo && auth.user.avatar) ||
+          course.instructor?.avatar ||
+          fallbackAvatar;
+
+        return `
+          <div class="yt-video-card" data-watch-id="${course.id}">
+            <!-- Compact 175px Thumbnail Box -->
+            <div class="yt-thumb-wrapper">
+              <img src="${course.thumbnail}" alt="${course.title}" />
+              <span class="yt-price-pill">
+                ${isFree || isEnrolled ? 'FREE • AD-FREE' : `₢ ${course.creditPrice}`}
+              </span>
+              <span class="yt-duration-badge">${course.duration || 'Video'}</span>
+            </div>
+
+            <!-- YouTube Style Metadata Row -->
+            <div class="yt-meta-row" style="align-items: flex-start;">
+              <img 
+                src="${resolvedAvatar}" 
+                onerror="this.onerror=null; this.src='${fallbackAvatar}';"
+                alt="${course.instructor?.name || 'Creator'}" 
+                class="yt-channel-avatar js-open-creator"
+                data-creator-id="${course.userId || ''}"
+                data-creator-name="${course.instructor?.name || 'Creator'}"
+                data-creator-avatar="${resolvedAvatar}"
+                title="Visit ${course.instructor?.name || 'Creator'}'s channel"
+                style="width: 36px; height: 36px; min-width: 36px; border-radius: 50%; object-fit: cover; cursor: pointer; display: block; background: #1e293b;"
+              />
+
+              <div class="yt-meta-text" style="flex: 1; min-width: 0;">
+                <h3 class="yt-video-title" title="${course.title}">${course.title}</h3>
+                
+                <div 
+                  class="yt-channel-name js-open-creator"
+                  data-creator-id="${course.userId || ''}"
+                  data-creator-name="${course.instructor?.name || 'Creator'}"
+                  data-creator-avatar="${resolvedAvatar}"
+                  title="Visit ${course.instructor?.name || 'Creator'}'s channel"
+                  style="cursor: pointer; display: inline-flex; align-items: center; gap: 4px;"
+                >
+                  <span>${course.instructor?.name || 'Creator'}</span>
+                  <span style="color: #38bdf8; font-size: 0.72rem;" title="Verified Instructor">✓</span>
+                  <span style="color: #64748b;">• ${course.categoryName}</span>
+                </div>
+
+                <div class="yt-stats-line" style="margin-top: 3px;">
+                  <span>
+                    ${course.views || 0} views • ${timeAgo}
+                  </span>
+                </div>
+              </div>
+
+              <!-- 3-Dot Action Menu (Playlist, Share/Copy Link, Download, Interest, Report + Owner Edit/Delete) -->
+              ${renderVideoThreeDotMenu(course)}
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      // Bind 3-dot menu listeners right after rendering video cards
+      bindVideoThreeDotListeners(coursesGrid, () => renderMarketplace());
+    }
+
+    attachDynamicListeners();
+  }
+
+  function attachDynamicListeners() {
+    // Click Creator Avatar or Channel Name -> Open Public Creator Channel
+    document.querySelectorAll('.js-open-creator').forEach(el => {
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const creatorId = el.getAttribute('data-creator-id');
+        const creatorName = el.getAttribute('data-creator-name');
+        const creatorAvatar = el.getAttribute('data-creator-avatar');
+
+        openCreatorChannel({
+          id: creatorId || null,
+          fullName: creatorName,
+          avatar: creatorAvatar
+        });
+      });
+    });
+
+    // Shorts Live Cards
+    document.querySelectorAll('.short-live-card').forEach(card => {
+      card.addEventListener('click', () => {
+        openVideoInClassroom(card.getAttribute('data-short-id'));
+      });
+    });
+
+    // Whole YouTube Video Card click -> Open in Classroom
+    document.querySelectorAll('.yt-video-card').forEach(card => {
+      card.addEventListener('click', () => {
+        openVideoInClassroom(card.getAttribute('data-watch-id'));
+      });
+    });
+
+    // Support / Like Pill Button
+    document.querySelectorAll('.btn-support-video').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = btn.getAttribute('data-support-id');
+        state.supportCourse(id);
+        window.showToast('Liked!', 'Your support boosted this video in the rankings!', 'success');
+      });
+    });
+
+    // Quick End Live button on Marketplace Live Now cards
+    document.querySelectorAll('.btn-quick-end-live').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const streamId = btn.getAttribute('data-end-id');
+        btn.disabled = true;
+        btn.textContent = '...';
+
+        try {
+          if (window.activeLiveRecorder && window.activeLiveRecorder.state !== 'inactive') {
+            window.activeLiveRecorder.stop();
+          }
+          if (window.activeLocalLiveStream) {
+            window.activeLocalLiveStream.getTracks().forEach(t => t.stop());
+            window.activeLocalLiveStream = null;
+          }
+
+          const headers = { 'Content-Type': 'application/json' };
+          if (auth.token) headers['Authorization'] = `Bearer ${auth.token}`;
+
+          const res = await fetch(`/api/courses/${streamId}/end-live`, {
+            method: 'POST',
+            credentials: 'include',
+            headers,
+            body: JSON.stringify({ duration: 'Recorded Live' })
+          });
+
+          if (res.ok) {
+            await state.loadCoursesFromDB();
+            window.showToast('Live Ended', 'Stream moved to the main video feed!', 'success');
+          }
+        } catch (err) {
+          window.showToast('Error', 'Could not end live stream.', 'error');
+          btn.disabled = false;
+          btn.textContent = '⏹ End';
         }
-        openCourseDetailModal(courseId);
       });
     });
   }
 
-  // Subscribe to state changes to update enrollment buttons live
-  state.subscribe(() => renderCourses());
-  renderCourses();
-}
+  function openVideoInClassroom(courseId) {
+    const course = state.courses.find(c => c.id === courseId);
+    if (!course) return;
 
-/**
- * Detailed Enrollment Checkout & Course Details Modal
- */
-function openCourseDetailModal(courseId) {
-  const course = state.courses.find(c => c.id === courseId);
-  if (!course) return;
+    const isFree = course.pricingModel === 'free' || course.creditPrice === 0;
+    const isEnrolled = (state.user?.enrolledCourseIds || []).includes(courseId);
 
-  const modal = document.getElementById('enroll-modal');
-  const container = document.getElementById('enroll-modal-content');
-  const isEnrolled = state.enrolledCourseIds.includes(courseId);
-  const userHasCredits = state.user.credits >= course.creditPrice;
-  const userHasCash = course.cashFee !== null && state.user.cash >= course.cashFee;
-
-  let actionButtonsHtml = '';
-
-  if (isEnrolled) {
-    actionButtonsHtml = `
-      <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: var(--radius-md); padding: 16px; margin-bottom: 20px; text-align: center;">
-        <h4 style="color: var(--credit-green-light); margin-bottom: 4px;">🎉 You own this session!</h4>
-        <p style="font-size: 0.85rem; color: var(--text-secondary);">Watch anytime with zero ad interruptions.</p>
-        <button class="btn btn-emerald" id="modal-go-classroom-btn" style="margin-top: 12px; width: 100%;">
-          ▶ Enter Ad-Free Classroom Now
-        </button>
-      </div>
-    `;
-  } else if (course.pricingModel === 'free') {
-    actionButtonsHtml = `
-      <div style="margin-bottom: 20px;">
-        <button class="btn btn-emerald" id="modal-enroll-free-btn" style="width: 100%; font-size: 1rem; padding: 14px;">
-          🎁 Enroll Free (Community Gift)
-        </button>
-      </div>
-    `;
-  } else if (course.pricingModel === 'credit-only') {
-    actionButtonsHtml = `
-      <div style="background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.3); border-radius: var(--radius-md); padding: 18px; margin-bottom: 20px;">
-        <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px;">
-          <h4 style="color: var(--text-pure);">Teacher Credit Exchange</h4>
-          <span style="font-family: var(--font-heading); font-size: 1.3rem; font-weight: 800; color: var(--credit-green-light);">
-            ₢ ${course.creditPrice} Credits
-          </span>
-        </div>
-        <p style="font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 14px;">
-          This session is exclusively accessible to teachers. You currently have <strong>${state.user.credits} ₢</strong>.
-        </p>
-        <button class="btn btn-emerald" id="modal-enroll-credits-btn" style="width: 100%;" ${!userHasCredits ? 'disabled style="opacity:0.6; cursor:not-allowed;"' : ''}>
-          ${userHasCredits ? `Redeem with ${course.creditPrice} Credits` : `Insufficient Credits (${state.user.credits} ₢ Available)`}
-        </button>
-        ${!userHasCredits ? `
-          <div style="margin-top: 10px; font-size: 0.78rem; color: var(--gold-amber-light); text-align: center;">
-            💡 Need credits? Go to Teacher Studio and teach a student to earn +50 ₢!
-          </div>
-        ` : ''}
-      </div>
-    `;
-  } else {
-    // DUAL PRICING: Credits (Free for teachers) OR Learner Fee ($)
-    actionButtonsHtml = `
-      <div class="dual-checkout-box" style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 20px;">
-        <!-- Option 1: Credits -->
-        <div style="background: rgba(16, 185, 129, 0.08); border: 1.5px solid rgba(16, 185, 129, 0.4); border-radius: var(--radius-md); padding: 16px; display: flex; flex-direction: column; justify-content: space-between;">
-          <div>
-            <span class="info-pill" style="margin-bottom: 6px; display: inline-block;">Free for Teachers</span>
-            <div style="font-family: var(--font-heading); font-size: 1.4rem; font-weight: 800; color: var(--credit-green-light); margin: 6px 0;">
-              ₢ ${course.creditPrice} <small style="font-size: 0.75rem; color: var(--text-secondary);">Credits</small>
-            </div>
-            <p style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 12px;">
-              Pay zero cash. Redeem the credits you earned by teaching peers! (Balance: <strong>${state.user.credits} ₢</strong>)
-            </p>
-          </div>
-          <button class="btn btn-emerald" id="modal-enroll-credits-btn" style="width: 100%; font-size: 0.85rem;" ${!userHasCredits ? 'disabled style="opacity:0.6; cursor:not-allowed;"' : ''}>
-            ${userHasCredits ? `Redeem ${course.creditPrice} ₢` : `Need ${course.creditPrice - state.user.credits} More ₢`}
-          </button>
-        </div>
-
-        <!-- Option 2: Cash Learner Fee -->
-        <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-glass); border-radius: var(--radius-md); padding: 16px; display: flex; flex-direction: column; justify-content: space-between;">
-          <div>
-            <span style="font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; font-weight: 700;">Pure Learner Fee</span>
-            <div style="font-family: var(--font-heading); font-size: 1.4rem; font-weight: 800; color: var(--text-pure); margin: 6px 0;">
-              $${course.cashFee.toFixed(2)} <small style="font-size: 0.75rem; color: var(--text-muted);">USD</small>
-            </div>
-            <p style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 12px;">
-              Direct payment set by the teacher for users who don't teach. (Balance: <strong>$${state.user.cash.toFixed(2)}</strong>)
-            </p>
-          </div>
-          <button class="btn btn-secondary" id="modal-enroll-cash-btn" style="width: 100%; font-size: 0.85rem;">
-            Pay $${course.cashFee.toFixed(2)} Fee
-          </button>
-        </div>
-      </div>
-    `;
-  }
-
-  container.innerHTML = `
-    <div class="modal-header" style="margin-bottom: 18px;">
-      <div class="modal-icon-badge">🎓</div>
-      <div>
-        <span class="course-category-tag">${course.categoryName} • ${course.format}</span>
-        <h2 class="modal-title" style="font-size: 1.35rem; margin-top: 4px;">${course.title}</h2>
-        <div style="display: flex; gap: 12px; font-size: 0.82rem; color: var(--text-secondary); margin-top: 6px;">
-          <span>⭐ ${course.rating} (${course.reviewsCount} reviews)</span>
-          <span>⏱ ${course.duration}</span>
-          <span style="color: var(--credit-green-light);">🛡️ 100% Ad-Free Video</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Instructor highlight -->
-    <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-glass); border-radius: var(--radius-md); padding: 12px 16px; margin-bottom: 20px;">
-      <div style="display: flex; align-items: center; gap: 12px;">
-        <img src="${course.instructor.avatar}" alt="${course.instructor.name}" style="width: 44px; height: 44px; border-radius: 50%; object-fit: cover; border: 2px solid var(--primary-indigo);" />
-        <div>
-          <h4 style="font-size: 0.95rem; color: var(--text-pure);">${course.instructor.name}</h4>
-          <span style="font-size: 0.75rem; color: var(--gold-amber-light);">${course.instructor.tier} • ${course.instructor.role}</span>
-        </div>
-      </div>
-      <div style="text-align: right;">
-        <span style="font-size: 0.85rem; font-weight: 700; color: var(--credit-green-light);">${course.instructor.studentsTaught} Students</span>
-        <div style="font-size: 0.72rem; color: var(--text-muted);">Taught on Crditeach</div>
-      </div>
-    </div>
-
-    <!-- Description -->
-    <p style="font-size: 0.9rem; color: var(--text-secondary); line-height: 1.5; margin-bottom: 20px;">
-      ${course.desc}
-    </p>
-
-    <!-- Syllabus Preview -->
-    <div style="margin-bottom: 22px;">
-      <h4 style="font-size: 0.95rem; margin-bottom: 10px; color: var(--text-pure);">Included Modules & Lessons</h4>
-      <div style="display: flex; flex-direction: column; gap: 6px;">
-        ${course.syllabus.map((s, idx) => `
-          <div style="display: flex; justify-content: space-between; padding: 8px 12px; background: rgba(255, 255, 255, 0.02); border-radius: var(--radius-sm); font-size: 0.84rem;">
-            <span>${s.title}</span>
-            <span style="color: var(--text-muted); font-size: 0.78rem;">${s.duration}</span>
-          </div>
-        `).join('')}
-      </div>
-    </div>
-
-    <!-- Checkout / Enrollment Action Buttons -->
-    ${actionButtonsHtml}
-  `;
-
-  // Attach button event listeners
-  const goClassroomBtn = document.getElementById('modal-go-classroom-btn');
-  if (goClassroomBtn) {
-    goClassroomBtn.addEventListener('click', () => {
-      modal.classList.remove('open');
-      state.setActiveCourse(courseId);
+    if (isFree || isEnrolled) {
+      state.activeCourseId = courseId;
+      state.recordCourseView(courseId);
       if (navigateCallback) navigateCallback('classroom');
-    });
-  }
-
-  const enrollFreeBtn = document.getElementById('modal-enroll-free-btn');
-  if (enrollFreeBtn) {
-    enrollFreeBtn.addEventListener('click', () => {
-      state.enrolledCourseIds.push(courseId);
-      state.setActiveCourse(courseId);
-      state.saveState();
-      modal.classList.remove('open');
-      window.showToast('Enrolled!', `🎁 Enrolled in "${course.title}" for free!`, 'success');
-      if (navigateCallback) navigateCallback('classroom');
-    });
-  }
-
-  const enrollCreditsBtn = document.getElementById('modal-enroll-credits-btn');
-  if (enrollCreditsBtn && userHasCredits) {
-    enrollCreditsBtn.addEventListener('click', () => {
+    } else {
       const res = state.enrollWithCredits(courseId);
       if (res.success) {
-        modal.classList.remove('open');
-        window.showToast('Credit Enrollment', res.message, 'success');
+        state.recordCourseView(courseId);
+        window.showToast('Unlocked!', res.message, 'success');
         if (navigateCallback) navigateCallback('classroom');
       } else {
-        window.showToast('Notice', res.message, 'reward');
+        window.showToast('Insufficient Credits', res.message, 'error');
       }
+    }
+  }
+
+  // Bind Category Pills from index.html (including dynamically added Saved Playlist pill)
+  document.querySelectorAll('#category-chips .cat-pill').forEach(pill => {
+    pill.addEventListener('click', () => {
+      document.querySelectorAll('#category-chips .cat-pill').forEach(p => p.classList.remove('active'));
+      pill.classList.add('active');
+      currentCategory = pill.getAttribute('data-category');
+      renderMarketplace();
+    });
+  });
+
+  // Bind Pricing Filter Chips from index.html
+  document.querySelectorAll('.pricing-filter-group .filter-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      document.querySelectorAll('.pricing-filter-group .filter-chip').forEach(c => c.classList.remove('active'));
+      chip.classList.add('active');
+      currentPriceFilter = chip.getAttribute('data-price-filter');
+      renderMarketplace();
+    });
+  });
+
+  // Bind Search Input (#marketplace-search in index.html)
+  if (searchInput) {
+    searchInput.addEventListener('input', (e) => {
+      currentSearch = e.target.value;
+      if (clearSearchBtn) clearSearchBtn.style.display = currentSearch ? 'block' : 'none';
+      clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = setTimeout(() => {
+        state.loadCoursesFromDB(currentSearch);
+      }, 250);
     });
   }
 
-  const enrollCashBtn = document.getElementById('modal-enroll-cash-btn');
-  if (enrollCashBtn) {
-    enrollCashBtn.addEventListener('click', () => {
-      const res = state.enrollWithCash(courseId);
-      if (res.success) {
-        modal.classList.remove('open');
-        window.showToast('Payment Confirmed', res.message, 'success');
-        if (navigateCallback) navigateCallback('classroom');
-      } else {
-        window.showToast('Payment Failed', res.message, 'reward');
-      }
+  if (clearSearchBtn && searchInput) {
+    clearSearchBtn.addEventListener('click', () => {
+      searchInput.value = '';
+      currentSearch = '';
+      clearSearchBtn.style.display = 'none';
+      state.loadCoursesFromDB('');
     });
   }
 
-  modal.classList.add('open');
+  state.subscribe(renderMarketplace);
+  renderMarketplace();
+  state.loadCoursesFromDB();
 }

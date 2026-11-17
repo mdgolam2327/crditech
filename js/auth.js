@@ -221,7 +221,7 @@ class AuthManager {
           users[idx].address = cleanAddress;
           localStorage.setItem(LOCAL_STORAGE_USERS_DB, JSON.stringify(users));
         }
-      } catch (e) {}
+      } catch (e) { }
 
       this.notify();
     }
@@ -233,12 +233,84 @@ class AuthManager {
   async logout() {
     try {
       await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
-    } catch (e) {}
+    } catch (e) { }
 
     localStorage.removeItem(LOCAL_STORAGE_USER_KEY);
     this.user = null;
     this.notify();
   }
-}
+
+  // 6. State Persistence Helpers (Called by state.js)
+  async fetchUserData() {
+    try {
+      const res = await fetch('/api/user/data', { credentials: 'include' });
+      if (res.ok) {
+        const data = await res.json();
+        return data.success ? data.userData : null;
+      }
+    } catch (e) { }
+    return null;
+  }
+
+  async persistUserData(payload) {
+    try {
+      await fetch('/api/user/data', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(payload)
+      });
+    } catch (e) { }
+  }
+
+  async persistCourse(coursePayload) {
+    return await publishCourseToServer(coursePayload);
+  }
+} // <-- এখানে AuthManager ক্লাস শেষ হলো
 
 export const auth = new AuthManager();
+
+// =========================================================
+// STANDALONE DATABASE SYNC HELPERS (CLASS-এর বাইরে)
+// =========================================================
+export async function fetchAllCoursesFromServer(searchQuery = '') {
+  try {
+    const url = searchQuery
+      ? `/api/courses?q=${encodeURIComponent(searchQuery)}`
+      : '/api/courses';
+    const res = await fetch(url, { credentials: 'include' });
+    const data = await res.json();
+    return data.success ? data.courses : [];
+  } catch (err) {
+    console.warn('Could not fetch courses from server:', err);
+    return [];
+  }
+}
+
+export async function publishCourseToServer(coursePayload) {
+  try {
+    const res = await fetch('/api/courses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(coursePayload)
+    });
+    return await res.json();
+  } catch (err) {
+    console.error('Error publishing course:', err);
+    return { success: false, error: 'Network error' };
+  }
+}
+
+export async function engageCourseOnServer(courseId, action) {
+  try {
+    const res = await fetch(`/api/courses/${courseId}/engage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action }) // 'view' or 'support'
+    });
+    return await res.json();
+  } catch (err) {
+    return { success: false };
+  }
+}

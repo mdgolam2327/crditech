@@ -27,6 +27,9 @@ export function initDatabase() {
       phone TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
       address TEXT DEFAULT '',
+      avatar TEXT DEFAULT '',
+      bio TEXT DEFAULT '',
+      skills TEXT DEFAULT '',
       email_verified INTEGER DEFAULT 1,
       phone_verified INTEGER DEFAULT 1,
       created_at TEXT NOT NULL,
@@ -91,17 +94,65 @@ export function initDatabase() {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS course_comments (
+      id TEXT PRIMARY KEY,
+      course_id TEXT NOT NULL,
+      user_id TEXT,
+      user_name TEXT NOT NULL,
+      avatar TEXT DEFAULT '',
+      message TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS reports (
+      id TEXT PRIMARY KEY,
+      target_type TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      target_title TEXT NOT NULL,
+      category TEXT NOT NULL,
+      details TEXT NOT NULL,
+      reporter_email TEXT DEFAULT '',
+      reporter_id TEXT,
+      destination_email TEXT NOT NULL,
+      status TEXT DEFAULT 'pending',
+      created_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
     CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone);
     CREATE INDEX IF NOT EXISTS idx_sessions_user ON user_sessions(user_id);
     CREATE INDEX IF NOT EXISTS idx_verifications_target ON verifications(target, type);
     CREATE INDEX IF NOT EXISTS idx_courses_user ON courses(user_id);
+    CREATE INDEX IF NOT EXISTS idx_comments_course ON course_comments(course_id);
+    CREATE INDEX IF NOT EXISTS idx_reports_target ON reports(target_type, target_id);
   `);
 
-  try {
-    db.exec("ALTER TABLE users ADD COLUMN address TEXT DEFAULT '';");
-  } catch (e) {
-    // Column already exists
+  const userColumns = [
+    "ALTER TABLE users ADD COLUMN address TEXT DEFAULT '';",
+    "ALTER TABLE users ADD COLUMN avatar TEXT DEFAULT '';",
+    "ALTER TABLE users ADD COLUMN bio TEXT DEFAULT '';",
+    "ALTER TABLE users ADD COLUMN skills TEXT DEFAULT '';"
+  ];
+  for (const q of userColumns) {
+    try {
+      db.exec(q);
+    } catch (e) { }
+  }
+
+  // Add new columns for Smart Search, Ranking & Live Shorts safely
+  const newCourseColumns = [
+    "ALTER TABLE courses ADD COLUMN tags TEXT DEFAULT '';",
+    "ALTER TABLE courses ADD COLUMN views INTEGER DEFAULT 0;",
+    "ALTER TABLE courses ADD COLUMN support_count INTEGER DEFAULT 0;",
+    "ALTER TABLE courses ADD COLUMN is_live INTEGER DEFAULT 0;"
+  ];
+
+  for (const query of newCourseColumns) {
+    try {
+      db.exec(query);
+    } catch (e) {
+      // Column already exists, ignore
+    }
   }
 
   console.log('📦 Crditeach SQLite Database initialized at:', DB_PATH);

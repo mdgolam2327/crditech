@@ -1,347 +1,1007 @@
 /**
- * AD-FREE CLASSROOM COMPONENT
- * 100% distraction-free video player, syllabus navigation, code snippets & notes
+- AD-FREE CLASSROOM & VIDEO WATCH PAGE COMPONENT
+- Supports:
+  * Real Video Playback & Live Stream Broadcast (Camera, Screen Share, Screen + Circular Facecam)
+  * Reliable Live Recording & Auto-Save on End Live
+  * Floating Bottom-Right Mini-Player with Close (✕) button
+  * YouTube-style Action Bar & Bottom Tabs (Comments & Q&A, Lesson Notes & Code, Course Overview)
  */
 
 import { state } from '../state.js';
+import { auth } from '../auth.js';
+import { openCreatorChannel } from './profileView.js';
+import {
+  getSavedPlaylistIds,
+  toggleSaveToPlaylist,
+  openReportModal
+} from './videoActions.js';
 
-let activeTab = 'notes';
 let navigateCallback = null;
+let activeBottomTab = 'comments';
+
+const DISLIKED_VIDEOS_KEY = 'crditeach_disliked_video_ids';
+const LIKED_VIDEOS_KEY = 'crditeach_liked_video_ids';
+const COMMENTS_STORAGE_KEY = 'crditeach_video_comments_v1';
+
+function getStoredIds(key) {
+  try {
+    const raw = JSON.parse(localStorage.getItem(key) || '[]');
+    return Array.isArray(raw) ? raw : [];
+  } catch {
+    return [];
+  }
+}
+
+function setStoredIds(key, ids) {
+  localStorage.setItem(key, JSON.stringify(ids));
+}
+
+function getCourseComments(courseId) {
+  try {
+    const all = JSON.parse(localStorage.getItem(COMMENTS_STORAGE_KEY) || '{}');
+    return Array.isArray(all[courseId]) ? all[courseId] : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveCourseComment(courseId, commentObj) {
+  try {
+    const all = JSON.parse(localStorage.getItem(COMMENTS_STORAGE_KEY) || '{}');
+    const existing = Array.isArray(all[courseId]) ? all[courseId] : [];
+    all[courseId] = [commentObj, ...existing];
+    localStorage.setItem(COMMENTS_STORAGE_KEY, JSON.stringify(all));
+    return all[courseId];
+  } catch {
+    return [commentObj];
+  }
+}
 
 export function initClassroom(onNavigate) {
   navigateCallback = onNavigate;
-  const mount = document.getElementById('classroom-mount');
-
-  function renderClassroom() {
-    const enrolledCourses = state.courses.filter(c => state.enrolledCourseIds.includes(c.id));
-    const activeCourse = state.courses.find(c => c.id === state.activeCourseId) || enrolledCourses[0] || state.courses[0];
-
-    if (!activeCourse) {
-      mount.innerHTML = `
-        <div class="classroom-empty-container">
-          <div class="classroom-empty-card">
-            <div class="empty-icon-ring">
-              <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polygon points="5 3 19 12 5 21 5 3"></polygon>
-              </svg>
-            </div>
-            <div class="empty-badge-pill">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-              </svg>
-              <span>100% Verified Ad-Free • Zero In-Video Ads</span>
-            </div>
-            <h2>Ad-Free Classroom is Ready</h2>
-            <p class="empty-desc">
-              All accounts on Crditeach start at zero. You haven't enrolled in any skill sessions yet. 
-              Once you enroll in a peer lesson or publish your own course, high-resolution videos, lesson notes, and peer Q&A will appear here—100% free of advertising interruptions.
-            </p>
-
-            <div class="empty-steps-grid">
-              <div class="empty-step-box">
-                <div class="step-badge">Explore Skills</div>
-                <h4>Marketplace</h4>
-                <p>Browse available peer sessions and unlock lessons with Credits (₢) or free community gifts.</p>
-                <button class="btn btn-secondary" id="empty-go-marketplace" style="margin-top: 14px; width: 100%;">
-                  🔍 Go to Marketplace
-                </button>
-              </div>
-
-              <div class="empty-step-box highlight-step">
-                <div class="step-badge credit-badge">Earn ₢ Credits</div>
-                <h4>Teacher Studio</h4>
-                <p>Simulate teaching a peer (+50 ₢), or publish your own skill session to start teaching others.</p>
-                <button class="btn btn-emerald btn-glow" id="empty-go-studio" style="margin-top: 14px; width: 100%;">
-                  ⚡ Go to Teacher Studio
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      `;
-
-      const goMarketplace = document.getElementById('empty-go-marketplace');
-      const goStudio = document.getElementById('empty-go-studio');
-      if (goMarketplace && navigateCallback) {
-        goMarketplace.addEventListener('click', () => navigateCallback('marketplace'));
-      }
-      if (goStudio && navigateCallback) {
-        goStudio.addEventListener('click', () => navigateCallback('studio'));
-      }
+  state.subscribe(() => {
+    // Avoid interrupting an active live video element unnecessarily
+    const liveVid = document.getElementById('classroom-main-video');
+    if (liveVid && liveVid.srcObject && document.getElementById('view-classroom')?.classList.contains('active-view')) {
       return;
     }
+    renderClassroom();
+  });
+  renderClassroom();
+}
 
-    const isEnrolled = state.enrolledCourseIds.includes(activeCourse.id);
+export function renderClassroom() {
+  const mount = document.getElementById('classroom-mount') || document.getElementById('view-classroom');
+  if (!mount) return;
 
+  // Resolve active course accurately (including newly created live sessions)
+  const activeCourse =
+    state.courses.find(c => String(c.id) === String(state.activeCourseId)) ||
+    state.courses.find(c => c.isLive) ||
+    state.courses[0] ||
+    null;
+
+  if (!activeCourse) {
     mount.innerHTML = `
-      <div class="classroom-layout">
-        <!-- Main Video & Content Column -->
-        <div class="classroom-main">
-          <!-- Video Container -->
-          <div class="video-player-container">
+      <div style="max-width: 640px; margin: 60px auto; text-align: center; padding: 48px 24px; background: var(--bg-card); border: 1px solid var(--border-glass); border-radius: 18px;">
+        <div style="font-size: 2.6rem; margin-bottom: 12px;">🎬</div>
+        <h2 style="color: var(--text-pure); margin-bottom: 8px;">No Video Selected</h2>
+        <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 20px;">
+          Select any video or live class from the Marketplace feed to start watching ad-free.
+        </p>
+        <button class="btn btn-primary" id="btn-classroom-go-market">
+          Browse Videos
+        </button>
+      </div>
+    `;
+    document.getElementById('btn-classroom-go-market')?.addEventListener('click', () => {
+      if (navigateCallback) navigateCallback('marketplace');
+    });
+    return;
+  }
+
+  const creatorName = activeCourse.instructor?.name || 'Creator';
+  const isCurrentUserVideo =
+    auth.isAuthenticated() &&
+    auth.user &&
+    ((activeCourse.userId && String(activeCourse.userId) === String(auth.user.id)) ||
+      creatorName === auth.user.fullName);
+
+  const fallbackAvatar = `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(creatorName)}`;
+  const resolvedAvatar =
+    (isCurrentUserVideo && auth.user.avatar) ||
+    activeCourse.instructor?.avatar ||
+    fallbackAvatar;
+
+  const likedIds = getStoredIds(LIKED_VIDEOS_KEY);
+  const dislikedIds = getStoredIds(DISLIKED_VIDEOS_KEY);
+  const savedIds = getSavedPlaylistIds();
+
+  const isLiked = likedIds.includes(activeCourse.id);
+  const isDisliked = dislikedIds.includes(activeCourse.id);
+  const isSaved = savedIds.includes(activeCourse.id);
+  const likeCount = activeCourse.supportCount || 0;
+  const comments = getCourseComments(activeCourse.id);
+
+  const rawSyllabus = Array.isArray(activeCourse.syllabus) ? activeCourse.syllabus : [];
+  const syllabusList = rawSyllabus.filter(item => {
+    if (!item || !item.title) return false;
+    const t = item.title.trim().toLowerCase();
+    const isDefaultDummy =
+      t === '01. foundational overview' ||
+      t === '01. introduction & foundational concepts' ||
+      (rawSyllabus.length === 1 && t === (activeCourse.title || '').trim().toLowerCase());
+    return !isDefaultDummy;
+  });
+
+  const cleanDesc = (activeCourse.desc || '').trim();
+  const cleanNotes = (activeCourse.notes || '').trim();
+  const isDummyNotes = cleanNotes.startsWith('// Taught on Crditeach by ');
+  const realNotes = isDummyNotes ? '' : cleanNotes;
+
+  const hasLiveStream = Boolean(activeCourse.isLive && window.activeLocalLiveStream);
+  const hasRecordedFile = Boolean(activeCourse.videoUrl && activeCourse.videoUrl.trim());
+  const canRenderVideoElement = hasLiveStream || hasRecordedFile || (activeCourse.isLive && isCurrentUserVideo);
+
+  mount.innerHTML = `
+    <div style="max-width: 1120px; margin: 0 auto; padding: 20px 16px 70px;">
+      <!-- Top Back Bar -->
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; gap: 12px; flex-wrap: wrap;">
+        <button type="button" class="btn btn-secondary" id="btn-classroom-back" style="font-size: 0.84rem; padding: 7px 14px;">
+          ← Back to Feed
+        </button>
+        ${activeCourse.categoryName ? `
+          <span style="font-size: 0.76rem; font-weight: 600; color: #38bdf8; background: rgba(56, 189, 248, 0.12); padding: 4px 12px; border-radius: 999px;">
+            ${escapeHtml(activeCourse.categoryName)}
+          </span>
+        ` : ''}
+      </div>
+
+      <div style="display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px;">
+        <!-- Main Video / Live Broadcast Player Container -->
+        <div id="classroom-player-box" style="width: 100%; background: #020617; border-radius: 16px; overflow: hidden; border: 1px solid var(--border-glass); aspect-ratio: 16 / 9; position: relative;">
+          ${canRenderVideoElement ? `
             <video 
-              id="active-video-player" 
-              class="video-element" 
-              src="${activeCourse.videoUrl}" 
-              poster="${activeCourse.thumbnail}"
-              controls 
-              playsinline
+              id="classroom-main-video"
+              ${hasRecordedFile && !activeCourse.isLive ? `src="${activeCourse.videoUrl}"` : ''}
+              poster="${activeCourse.thumbnail || ''}"
+              ${activeCourse.isLive ? 'autoplay muted playsinline' : 'controls playsinline'}
+              style="width: 100%; height: 100%; object-fit: contain; background: #000; display: block;"
+            ></video>
+
+            ${activeCourse.isLive && isCurrentUserVideo ? `
+              <!-- Top-Left LIVE Indicator -->
+              <div style="position: absolute; top: 14px; left: 14px; display: inline-flex; align-items: center; gap: 6px; background: rgba(220, 38, 38, 0.92); color: #fff; font-size: 0.76rem; font-weight: 800; padding: 5px 12px; border-radius: 999px; letter-spacing: 0.5px; z-index: 15;">
+                <span style="width: 8px; height: 8px; border-radius: 50%; background: #fff; display: inline-block;"></span>
+                LIVE BROADCASTING
+              </div>
+
+              <!-- Bottom Overlay Controls: Camera | Share Screen | Screen + Facecam | End Live -->
+              <div style="position: absolute; bottom: 14px; left: 14px; right: 14px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; background: rgba(15, 23, 42, 0.88); backdrop-filter: blur(8px); padding: 10px 14px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.14); z-index: 15;">
+                <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                  <button type="button" id="btn-live-switch-camera" class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.78rem;">
+                    📷 Camera
+                  </button>
+                  <button type="button" id="btn-live-switch-screen" class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.78rem;">
+                    🖥️ Share Screen
+                  </button>
+                  <button type="button" id="btn-live-switch-combo" class="btn btn-primary" style="padding: 6px 12px; font-size: 0.78rem;">
+                    🧑‍💻 Screen + Facecam
+                  </button>
+                </div>
+
+                <button type="button" id="btn-classroom-end-live" style="background: #dc2626; color: #fff; border: none; border-radius: 9px; padding: 8px 16px; font-size: 0.82rem; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;">
+                  ⏹ End Live Stream
+                </button>
+              </div>
+            ` : ''}
+          ` : `
+            <div style="width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #94a3b8; gap: 10px; padding: 20px; text-align: center;">
+              <div style="font-size: 2.2rem;">🎥</div>
+              <div style="font-size: 0.95rem; color: #e2e8f0; font-weight: 600;">${escapeHtml(activeCourse.title)}</div>
+              <div style="font-size: 0.82rem;">
+                ${activeCourse.isLive ? 'Live stream is currently broadcasting.' : 'No video file attached to this session yet.'}
+              </div>
+            </div>
+          `}
+        </div>
+
+        <!-- Video Title, Creator Info & YouTube-Style Action Bar -->
+        <div style="background: var(--bg-card); border: 1px solid var(--border-glass); border-radius: 16px; padding: 18px 20px;">
+          <h1 style="font-size: 1.32rem; font-weight: 700; color: var(--text-pure); margin: 0 0 14px; line-height: 1.35;">
+            ${escapeHtml(activeCourse.title)}
+          </h1>
+
+          <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px;">
+            <div 
+              class="js-watch-open-creator"
+              style="display: flex; align-items: center; gap: 12px; cursor: pointer;"
+              title="Visit ${escapeHtml(creatorName)}'s channel"
             >
-              Your browser does not support HTML5 video.
-            </video>
-            <div class="ad-free-guarantee-banner">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-              </svg>
-              <span>Verified Ad-Free • Zero Video Interruptions</span>
-            </div>
-          </div>
-
-          <!-- Video Metadata & Actions -->
-          <div class="classroom-video-meta">
-            <div class="video-title-row">
+              <img 
+                src="${resolvedAvatar}" 
+                onerror="this.onerror=null; this.src='${fallbackAvatar}';"
+                alt="${escapeHtml(creatorName)}" 
+                style="width: 44px; height: 44px; border-radius: 50%; object-fit: cover; border: 2px solid rgba(56, 189, 248, 0.45); background: #1e293b;"
+              />
               <div>
-                <span class="course-category-tag">${activeCourse.categoryName} • ${activeCourse.format}</span>
-                <h1 class="video-heading">${activeCourse.title}</h1>
-              </div>
-              <div class="video-controls-quick">
-                <button class="action-icon-btn" id="btn-toggle-speed" title="Playback speed (1x / 1.25x / 1.5x)">
-                  <span id="speed-label" style="font-size:0.78rem; font-weight:700;">1x</span>
-                </button>
-                <button class="action-icon-btn" id="btn-bookmark" title="Bookmark lesson">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>
-                  </svg>
-                </button>
+                <div style="font-weight: 700; font-size: 0.96rem; color: var(--text-pure); display: flex; align-items: center; gap: 5px;">
+                  <span>${escapeHtml(creatorName)}</span>
+                  <span style="color: #38bdf8; font-size: 0.78rem;">✓</span>
+                </div>
+                <div style="font-size: 0.78rem; color: var(--text-secondary);">
+                  ${activeCourse.views || 0} views
+                </div>
               </div>
             </div>
 
-            <!-- Content Tabs -->
-            <div class="classroom-tabs">
-              <button class="cr-tab-btn ${activeTab === 'notes' ? 'active' : ''}" data-cr-tab="notes">
-                📝 Lesson Notes & Code
-              </button>
-              <button class="cr-tab-btn ${activeTab === 'qa' ? 'active' : ''}" data-cr-tab="qa">
-                💬 Peer Discussion (8)
-              </button>
-              <button class="cr-tab-btn ${activeTab === 'overview' ? 'active' : ''}" data-cr-tab="overview">
-                ℹ️ Course Overview
-              </button>
-            </div>
+            <!-- YouTube-Style Action Pills -->
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <div style="display: inline-flex; align-items: center; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12); border-radius: 999px; overflow: hidden;">
+                <button 
+                  type="button" 
+                  id="btn-watch-like"
+                  title="Like this video"
+                  style="background: ${isLiked ? 'rgba(56, 189, 248, 0.22)' : 'transparent'}; color: ${isLiked ? '#38bdf8' : '#f8fafc'}; border: none; padding: 8px 14px; font-size: 0.84rem; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;"
+                >
+                  <span>👍</span>
+                  <span id="watch-like-count">${likeCount}</span>
+                </button>
+                <div style="width: 1px; height: 20px; background: rgba(255,255,255,0.14);"></div>
+                <button 
+                  type="button" 
+                  id="btn-watch-dislike"
+                  title="Dislike this video"
+                  style="background: ${isDisliked ? 'rgba(248, 113, 113, 0.22)' : 'transparent'}; color: ${isDisliked ? '#fca5a5' : '#cbd5e1'}; border: none; padding: 8px 13px; font-size: 0.84rem; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center;"
+                >
+                  <span>👎</span>
+                </button>
+              </div>
 
-            <!-- Tab Content -->
-            <div class="cr-tab-content">
-              ${activeTab === 'notes' ? renderNotesTab(activeCourse) : ''}
-              ${activeTab === 'qa' ? renderQATab(activeCourse) : ''}
-              ${activeTab === 'overview' ? renderOverviewTab(activeCourse) : ''}
+              <button type="button" id="btn-watch-share" style="${actionPillStyle('#f8fafc')}">
+                <span>🔗</span>
+                <span>Share</span>
+              </button>
+
+              <button 
+                type="button" 
+                id="btn-watch-save"
+                style="${actionPillStyle(isSaved ? '#38bdf8' : '#f8fafc', isSaved ? 'rgba(56, 189, 248, 0.16)' : 'rgba(255,255,255,0.07)')}"
+              >
+                <span>${isSaved ? '✅' : '🔖'}</span>
+                <span>${isSaved ? 'Saved' : 'Save'}</span>
+              </button>
+
+              <button type="button" id="btn-watch-download" style="${actionPillStyle('#f8fafc')}">
+                <span>⬇️</span>
+                <span>Download</span>
+              </button>
+
+              <button type="button" id="btn-watch-report" style="${actionPillStyle('#cbd5e1')}">
+                <span>🚩</span>
+                <span>Report</span>
+              </button>
             </div>
           </div>
         </div>
 
-        <!-- Sidebar Column -->
-        <aside class="classroom-sidebar">
-          
-          <!-- Enrolled Selector (if user owns multiple) -->
-          ${enrolledCourses.length > 1 ? `
-            <div class="syllabus-card" style="padding: 14px 18px;">
-              <label style="font-size: 0.78rem; color: var(--text-muted); text-transform: uppercase;">Switch Enrolled Skill:</label>
-              <select id="switch-enrolled-select" style="width: 100%; margin-top: 6px; padding: 8px 12px;">
-                ${enrolledCourses.map(c => `
-                  <option value="${c.id}" ${c.id === activeCourse.id ? 'selected' : ''}>${c.title}</option>
-                `).join('')}
-              </select>
-            </div>
-          ` : ''}
+        <!-- Bottom Tabs Card: 💬 Comments & Q&A | 📝 Lesson Notes & Code | ℹ️ Course Overview -->
+        <div style="background: var(--bg-card); border: 1px solid var(--border-glass); border-radius: 16px; overflow: hidden;">
+          <div style="display: flex; align-items: center; gap: 6px; padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,0.08); overflow-x: auto; background: rgba(255,255,255,0.02);">
+            <button type="button" class="js-watch-bottom-tab" data-tab="comments" style="${bottomTabStyle(activeBottomTab === 'comments')}">
+              💬 Comments & Q&A (${comments.length})
+            </button>
+            <button type="button" class="js-watch-bottom-tab" data-tab="notes" style="${bottomTabStyle(activeBottomTab === 'notes')}">
+              📝 Lesson Notes & Code
+            </button>
+            <button type="button" class="js-watch-bottom-tab" data-tab="overview" style="${bottomTabStyle(activeBottomTab === 'overview')}">
+              ℹ️ Course Overview
+            </button>
+          </div>
 
-          <!-- Syllabus Card -->
-          <div class="syllabus-card">
-            <h3 class="sidebar-card-title">
-              <span>Course Syllabus</span>
-              <span style="font-size: 0.78rem; color: var(--credit-green-light); font-weight: 600;">${activeCourse.syllabus.length} Lessons</span>
+          <div style="padding: 18px 20px;">
+            ${activeBottomTab === 'comments' ? renderCommentsTab(comments) : ''}
+            ${activeBottomTab === 'notes' ? renderNotesTab(realNotes, activeCourse, isCurrentUserVideo) : ''}
+            ${activeBottomTab === 'overview' ? renderOverviewTab(activeCourse, cleanDesc) : ''}
+          </div>
+        </div>
+
+        <!-- Session Details Box (Blank inside unless creator explicitly added modules) -->
+        <div style="background: var(--bg-card); border: 1px solid var(--border-glass); border-radius: 16px; padding: 18px 20px;">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: ${syllabusList.length > 0 ? '12px' : '0'};">
+            <h3 style="font-size: 1rem; font-weight: 700; color: var(--text-pure); margin: 0;">
+              Session Details
             </h3>
-            <div class="lesson-list">
-              ${activeCourse.syllabus.map((lesson, idx) => `
-                <div class="lesson-item ${lesson.active ? 'active-lesson' : ''}" data-lesson-idx="${idx}">
-                  <div class="lesson-left">
-                    <span class="lesson-play-icon">${lesson.active ? '▶' : '✓'}</span>
-                    <span class="lesson-name">${lesson.title}</span>
-                  </div>
-                  <span class="lesson-duration">${lesson.duration}</span>
+            ${syllabusList.length > 0 ? `
+              <span style="font-size: 0.78rem; color: var(--text-secondary);">
+                ${syllabusList.length} ${syllabusList.length === 1 ? 'Module' : 'Modules'}
+              </span>
+            ` : ''}
+          </div>
+
+          ${syllabusList.length > 0 ? `
+            <div style="display: flex; flex-direction: column; gap: 8px;">
+              ${syllabusList.map(mod => `
+                <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07); border-radius: 10px;">
+                  <span style="font-size: 0.88rem; color: var(--text-pure); font-weight: 500;">${escapeHtml(mod.title)}</span>
+                  ${mod.duration ? `<span style="font-size: 0.78rem; color: var(--text-secondary);">${escapeHtml(mod.duration)}</span>` : ''}
                 </div>
               `).join('')}
             </div>
-          </div>
+          ` : ''}
+        </div>
+      </div>
+    </div>
+  `;
 
-          <!-- Instructor Callout & Credit Flywheel Banner -->
-          <div class="mentor-callout-card">
-            <div class="mentor-info-box">
-              <img src="${activeCourse.instructor.avatar}" alt="${activeCourse.instructor.name}" class="mentor-avatar-lg" />
-              <div>
-                <h4 style="font-size: 1rem; color: var(--text-pure);">${activeCourse.instructor.name}</h4>
-                <span style="font-size: 0.78rem; color: var(--gold-amber-light); font-weight: 600;">${activeCourse.instructor.tier}</span>
-                <div style="font-size: 0.75rem; color: var(--text-muted);">${activeCourse.instructor.studentsTaught} students taught</div>
+  attachClassroomListeners(activeCourse, creatorName, resolvedAvatar, isCurrentUserVideo);
+}
+
+function bottomTabStyle(isActive) {
+  return `
+    background: ${isActive ? 'rgba(56, 189, 248, 0.16)' : 'transparent'};
+    color: ${isActive ? '#38bdf8' : '#cbd5e1'};
+    border: 1px solid ${isActive ? 'rgba(56, 189, 248, 0.4)' : 'transparent'};
+    padding: 8px 14px;
+    border-radius: 10px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s;
+  `;
+}
+
+function renderCommentsTab(comments) {
+  return `
+    <div>
+      <form id="watch-comment-form" style="display: flex; gap: 10px; margin-bottom: 18px; flex-wrap: wrap;">
+        <input 
+          type="text" 
+          id="watch-comment-input" 
+          placeholder="Ask a question or share feedback about this session..." 
+          required
+          style="flex: 1; min-width: 240px;"
+        />
+        <button type="submit" class="btn btn-primary" style="padding: 9px 18px; font-size: 0.84rem; font-weight: 600;">
+          Post Comment
+        </button>
+      </form>
+
+      ${comments.length === 0 ? `
+        <div style="text-align: center; padding: 28px 16px; color: var(--text-secondary); font-size: 0.88rem; background: rgba(255,255,255,0.02); border-radius: 12px; border: 1px dashed rgba(255,255,255,0.1);">
+          No comments or questions yet. Be the first to start the discussion!
+        </div>
+      ` : `
+        <div style="display: flex; flex-direction: column; gap: 12px;">
+          ${comments.map(c => {
+            const cAvatar = c.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(c.author || 'Member')}`;
+            return `
+              <div style="display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07); border-radius: 12px;">
+                <img src="${cAvatar}" alt="${escapeHtml(c.author)}" style="width: 34px; height: 34px; border-radius: 50%; object-fit: cover; flex-shrink: 0;" />
+                <div style="flex: 1; min-width: 0;">
+                  <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+                    <strong style="font-size: 0.86rem; color: var(--text-pure);">${escapeHtml(c.author)}</strong>
+                    <span style="font-size: 0.74rem; color: var(--text-muted);">${escapeHtml(c.createdAt || 'Just now')}</span>
+                  </div>
+                  <p style="margin: 0; font-size: 0.88rem; color: var(--text-secondary); line-height: 1.5; white-space: pre-line;">
+                    ${escapeHtml(c.text)}
+                  </p>
+                </div>
               </div>
-            </div>
-
-            <div class="teach-reward-box">
-              <h5>⚡ The Crditeach Virtuous Cycle</h5>
-              <p>This teacher is sharing their knowledge and earning Credits. You can do the same! Teach any topic in the Teacher Studio to earn Credits and learn from others completely free.</p>
-              <button class="btn btn-emerald" id="sidebar-teach-btn" style="width: 100%; margin-top: 10px; font-size: 0.82rem; padding: 8px 14px;">
-                🚀 Teach a Skill & Earn ₢
-              </button>
-            </div>
-          </div>
-
-        </aside>
-      </div>
-    `;
-
-    // Attach listeners
-    attachClassroomListeners(activeCourse);
-  }
-
-  function attachClassroomListeners(activeCourse) {
-    // Video speed toggle
-    const speedBtn = document.getElementById('btn-toggle-speed');
-    const speedLabel = document.getElementById('speed-label');
-    const video = document.getElementById('active-video-player');
-    const speeds = [1, 1.25, 1.5, 2];
-    let speedIdx = 0;
-
-    if (speedBtn && video) {
-      speedBtn.addEventListener('click', () => {
-        speedIdx = (speedIdx + 1) % speeds.length;
-        video.playbackRate = speeds[speedIdx];
-        speedLabel.textContent = speeds[speedIdx] + 'x';
-        window.showToast('Playback Speed', `Video speed set to ${speeds[speedIdx]}x`, 'info');
-      });
-    }
-
-    // Tabs clicks
-    document.querySelectorAll('.cr-tab-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        activeTab = btn.getAttribute('data-cr-tab');
-        renderClassroom();
-      });
-    });
-
-    // Enrolled switch
-    const switchSelect = document.getElementById('switch-enrolled-select');
-    if (switchSelect) {
-      switchSelect.addEventListener('change', (e) => {
-        state.setActiveCourse(e.target.value);
-        renderClassroom();
-      });
-    }
-
-    // Sidebar teach button -> go to Teacher Studio
-    const teachBtn = document.getElementById('sidebar-teach-btn');
-    if (teachBtn && navigateCallback) {
-      teachBtn.addEventListener('click', () => {
-        navigateCallback('studio');
-      });
-    }
-
-    // Syllabus lesson clicks
-    document.querySelectorAll('.lesson-item').forEach(item => {
-      item.addEventListener('click', () => {
-        const idx = Number(item.getAttribute('data-lesson-idx'));
-        activeCourse.syllabus.forEach((s, i) => s.active = (i === idx));
-        window.showToast('Loaded Lesson', activeCourse.syllabus[idx].title, 'info');
-        renderClassroom();
-      });
-    });
-
-    // Copy code snippet
-    const copyBtn = document.getElementById('copy-notes-code');
-    if (copyBtn) {
-      copyBtn.addEventListener('click', () => {
-        navigator.clipboard?.writeText(activeCourse.notes || '');
-        copyBtn.textContent = '✓ Copied!';
-        setTimeout(() => { copyBtn.textContent = 'Copy Code'; }, 2000);
-      });
-    }
-
-    // Post Q&A comment simulation
-    const qaForm = document.getElementById('qa-form');
-    if (qaForm) {
-      qaForm.addEventListener('submit', (e) => {
-        e.preventDefault();
-        const input = document.getElementById('qa-input');
-        if (!input.value.trim()) return;
-        window.showToast('Question Posted', `Your question was posted to the teacher & peer community!`, 'success');
-        input.value = '';
-      });
-    }
-  }
-
-  function renderNotesTab(course) {
-    return `
-      <div>
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-          <h4 style="font-size: 0.95rem; color: var(--text-pure);">Teacher's Code & Key Architecture Notes</h4>
-          <button class="btn btn-secondary" id="copy-notes-code" style="padding: 4px 12px; font-size: 0.78rem;">
-            Copy Code
-          </button>
+            `;
+          }).join('')}
         </div>
-        <pre style="background: rgba(0, 0, 0, 0.4); border: 1px solid var(--border-glass); border-radius: var(--radius-md); padding: 18px; font-family: var(--font-mono); font-size: 0.88rem; color: #a5f3fc; overflow-x: auto; line-height: 1.6;"><code>${escapeHtml(course.notes || '// No code snippets attached to this lesson.')}</code></pre>
-      </div>
-    `;
-  }
+      `}
+    </div>
+  `;
+}
 
-  function renderQATab(course) {
-    return `
-      <div>
-        <form id="qa-form" style="display: flex; gap: 10px; margin-bottom: 20px;">
-          <input type="text" id="qa-input" placeholder="Ask ${course.instructor.name} or peer students a question..." style="flex:1;" required />
-          <button type="submit" class="btn btn-primary" style="padding: 8px 18px; font-size: 0.85rem;">Post</button>
+function renderNotesTab(realNotes, course, isOwner) {
+  const attachmentRegex = /📎 Attached File:\s*(.+?)\s*\((https?:\/\/[^\s)]+|\/uploads\/[^\s)]+)\)/g;
+  const attachments = [];
+  let m;
+  while ((m = attachmentRegex.exec(realNotes || '')) !== null) {
+    attachments.push({ name: m[1], url: m[2] });
+  }
+  const textOnly = (realNotes || '').replace(attachmentRegex, '').trim();
+
+  return `
+    <div style="display: flex; flex-direction: column; gap: 16px;">
+      ${isOwner ? `
+        <form id="live-classroom-notes-form" style="padding: 14px; background: rgba(56, 189, 248, 0.06); border: 1px dashed rgba(56, 189, 248, 0.4); border-radius: 12px; display: flex; flex-direction: column; gap: 10px;">
+          <div style="font-size: 0.84rem; font-weight: 700; color: #38bdf8;">
+            ➕ Share / Update Lesson Notes or Upload File ${course.isLive ? '(Live Session)' : ''}
+          </div>
+          <textarea 
+            id="classroom-live-notes-text" 
+            rows="3" 
+            placeholder="Write or update notes / code snippets for viewers..."
+            style="width: 100%; font-family: monospace; font-size: 0.83rem;"
+          >${escapeHtml(textOnly)}</textarea>
+          <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+            <input 
+              type="file" 
+              id="classroom-live-notes-file" 
+              accept=".pdf,.txt,.md,.doc,.docx,.js,.ts,.py,.java,.cpp,.c,.html,.css,.json,.csv,.zip,image/*"
+              style="font-size: 0.8rem; color: #cbd5e1;"
+            />
+            <button type="submit" id="btn-save-classroom-notes" class="btn btn-primary" style="padding: 7px 16px; font-size: 0.82rem;">
+              📤 Publish Notes / File
+            </button>
+          </div>
         </form>
+      ` : ''}
 
-        <div style="display: flex; flex-direction: column; gap: 14px;">
-          <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-glass); border-radius: var(--radius-md); padding: 14px;">
-            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
-              <strong style="font-size: 0.88rem; color: var(--text-pure);">Marcus Cole (Peer Student)</strong>
-              <span style="font-size: 0.75rem; color: var(--text-muted);">3 hours ago</span>
+      ${attachments.length > 0 ? `
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          ${attachments.map(att => `
+            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 11px 14px; background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 10px;">
+              <span style="font-size: 0.86rem; font-weight: 600; color: #f8fafc;">📎 ${escapeHtml(att.name)}</span>
+              <a href="${escapeHtml(att.url)}" download="${escapeHtml(att.name)}" target="_blank" rel="noopener noreferrer" class="btn btn-primary" style="padding: 6px 12px; font-size: 0.78rem; text-decoration: none;">
+                ⬇️ Download
+              </a>
             </div>
-            <p style="font-size: 0.84rem; color: var(--text-secondary);">How does this design handle network disconnects during high-throughput streaming?</p>
-            <div style="margin-top: 10px; padding: 10px 14px; background: rgba(99, 102, 241, 0.08); border-left: 3px solid var(--primary-indigo); border-radius: var(--radius-sm);">
-              <strong style="font-size: 0.82rem; color: var(--primary-cyan);">${course.instructor.name} (Instructor):</strong>
-              <p style="font-size: 0.82rem; color: var(--text-secondary); margin-top: 4px;">Great question! We implement exponential backoff with jitter and persistent buffer queues in module 4.</p>
-            </div>
-          </div>
+          `).join('')}
         </div>
-      </div>
-    `;
-  }
+      ` : ''}
 
-  function renderOverviewTab(course) {
-    return `
-      <div style="color: var(--text-secondary); font-size: 0.88rem; line-height: 1.6;">
-        <h4 style="color: var(--text-pure); margin-bottom: 8px;">About this Masterclass</h4>
-        <p style="margin-bottom: 14px;">${course.desc}</p>
-        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; background: rgba(255, 255, 255, 0.03); padding: 14px; border-radius: var(--radius-md); border: 1px solid var(--border-glass);">
-          <div>
-            <span style="font-size: 0.75rem; color: var(--text-muted);">FORMAT</span>
-            <div style="font-weight: 700; color: var(--text-pure);">${course.format}</div>
-          </div>
-          <div>
-            <span style="font-size: 0.75rem; color: var(--text-muted);">DURATION</span>
-            <div style="font-weight: 700; color: var(--text-pure);">${course.duration}</div>
-          </div>
-          <div>
-            <span style="font-size: 0.75rem; color: var(--text-muted);">AD POLICY</span>
-            <div style="font-weight: 700; color: var(--credit-green-light);">0 Video Ads</div>
-          </div>
+      ${textOnly ? `
+        <pre style="margin: 0; padding: 14px; background: #020617; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; color: #e2e8f0; font-size: 0.85rem; overflow-x: auto; white-space: pre-wrap;">${escapeHtml(textOnly)}</pre>
+      ` : (!attachments.length ? `
+        <div style="text-align: center; padding: 24px 16px; color: var(--text-secondary); font-size: 0.86rem; background: rgba(255,255,255,0.02); border-radius: 12px; border: 1px dashed rgba(255,255,255,0.1);">
+          No lesson notes or code files shared yet.
         </div>
+      ` : '')}
+    </div>
+  `;
+}
+
+function renderOverviewTab(course, cleanDesc) {
+  return `
+    <div style="display: flex; flex-direction: column; gap: 12px;">
+      <div style="display: flex; flex-wrap: wrap; gap: 10px;">
+        ${course.categoryName ? `
+          <span style="font-size: 0.78rem; padding: 4px 10px; border-radius: 8px; background: rgba(255,255,255,0.06); color: #e2e8f0;">
+            Category: <strong>${escapeHtml(course.categoryName)}</strong>
+          </span>
+        ` : ''}
+        ${course.duration ? `
+          <span style="font-size: 0.78rem; padding: 4px 10px; border-radius: 8px; background: rgba(255,255,255,0.06); color: #e2e8f0;">
+            Duration: <strong>${escapeHtml(course.duration)}</strong>
+          </span>
+        ` : ''}
+        <span style="font-size: 0.78rem; padding: 4px 10px; border-radius: 8px; background: rgba(255,255,255,0.06); color: #e2e8f0;">
+          Access: <strong>${course.pricingModel === 'free' || course.creditPrice === 0 ? 'Free • Ad-Free' : `${course.creditPrice} Credits`}</strong>
+        </span>
       </div>
-    `;
+
+      ${cleanDesc ? `
+        <p style="margin: 0; font-size: 0.9rem; color: var(--text-secondary); line-height: 1.6; white-space: pre-line;">
+          ${escapeHtml(cleanDesc)}
+        </p>
+      ` : `
+        <p style="margin: 0; font-size: 0.86rem; color: var(--text-muted);">
+          No description provided for this session.
+        </p>
+      `}
+    </div>
+  `;
+}
+
+function actionPillStyle(color = '#f8fafc', bg = 'rgba(255,255,255,0.07)') {
+  return `background: ${bg}; border: 1px solid rgba(255,255,255,0.12); color: ${color}; border-radius: 999px; padding: 8px 14px; font-size: 0.84rem; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; transition: background 0.15s;`;
+}
+
+function stopLiveCanvasMixer() {
+  if (window.activeLiveMixerTimer) {
+    clearInterval(window.activeLiveMixerTimer);
+    window.activeLiveMixerTimer = null;
+  }
+  if (Array.isArray(window.activeLiveExtraStreams)) {
+    window.activeLiveExtraStreams.forEach(s => s.getTracks().forEach(t => t.stop()));
+    window.activeLiveExtraStreams = [];
+  }
+}
+
+function attachClassroomListeners(course, creatorName, resolvedAvatar, isOwner) {
+  const mainVideoEl = document.getElementById('classroom-main-video');
+
+  // Attach active Camera or Screen Share stream immediately when Live
+  if (course.isLive && mainVideoEl) {
+    if (window.activeLocalLiveStream) {
+      mainVideoEl.srcObject = window.activeLocalLiveStream;
+      mainVideoEl.muted = true;
+      mainVideoEl.play().catch(err => console.warn('Live play retry:', err));
+    } else if (isOwner) {
+      // Auto-start camera if owner opened their live room without an active stream
+      switchLiveBroadcastSource('camera');
+    }
   }
 
-  function escapeHtml(str) {
-    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // Switch between: 'camera' | 'screen' | 'combo' (Screen + Circular Facecam Overlay)
+  async function switchLiveBroadcastSource(mode) {
+    try {
+      let finalOutputStream = null;
+      const newExtraStreams = [];
+
+      if (mode === 'combo') {
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+        const camStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        newExtraStreams.push(screenStream, camStream);
+
+        const screenVid = document.createElement('video');
+        screenVid.srcObject = screenStream;
+        screenVid.muted = true;
+        screenVid.playsInline = true;
+        await screenVid.play();
+
+        const camVid = document.createElement('video');
+        camVid.srcObject = camStream;
+        camVid.muted = true;
+        camVid.playsInline = true;
+        await camVid.play();
+
+        const canvas = document.createElement('canvas');
+        canvas.width = 1280;
+        canvas.height = 720;
+        const ctx = canvas.getContext('2d');
+
+        stopLiveCanvasMixer();
+        window.activeLiveExtraStreams = newExtraStreams;
+
+        window.activeLiveMixerTimer = setInterval(() => {
+          ctx.fillStyle = '#000';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(screenVid, 0, 0, canvas.width, canvas.height);
+
+          const radius = 92;
+          const cx = canvas.width - radius - 28;
+          const cy = canvas.height - radius - 28;
+
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+          ctx.closePath();
+          ctx.clip();
+
+          const vw = camVid.videoWidth || 640;
+          const vh = camVid.videoHeight || 480;
+          const size = Math.min(vw, vh);
+          const sx = (vw - size) / 2;
+          const sy = (vh - size) / 2;
+          ctx.drawImage(camVid, sx, sy, size, size, cx - radius, cy - radius, radius * 2, radius * 2);
+          ctx.restore();
+
+          ctx.beginPath();
+          ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+          ctx.lineWidth = 4;
+          ctx.strokeStyle = '#38bdf8';
+          ctx.stroke();
+        }, 33);
+
+        const mixedStream = canvas.captureStream(30);
+        camStream.getAudioTracks().forEach(track => mixedStream.addTrack(track));
+        finalOutputStream = mixedStream;
+      } else {
+        const singleStream = mode === 'screen'
+          ? await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
+          : await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+
+        stopLiveCanvasMixer();
+        finalOutputStream = singleStream;
+      }
+
+      if (window.activeLocalLiveStream) {
+        window.activeLocalLiveStream.getTracks().forEach(t => t.stop());
+      }
+      window.activeLocalLiveStream = finalOutputStream;
+
+      const vid = document.getElementById('classroom-main-video');
+      if (vid) {
+        vid.srcObject = finalOutputStream;
+        vid.muted = true;
+        await vid.play().catch(() => {});
+      }
+
+      // Preserve existing recorded chunks and record new source cleanly
+      window.liveRecordedChunks = window.liveRecordedChunks || [];
+      if (window.activeLiveRecorder && window.activeLiveRecorder.state !== 'inactive') {
+        try { window.activeLiveRecorder.stop(); } catch {}
+      }
+      try {
+        const rec = new MediaRecorder(finalOutputStream, { mimeType: 'video/webm' });
+        rec.ondataavailable = (ev) => {
+          if (ev.data && ev.data.size > 0) {
+            window.liveRecordedChunks.push(ev.data);
+          }
+        };
+        rec.start(500);
+        window.activeLiveRecorder = rec;
+      } catch {}
+
+      const toastLabels = {
+        camera: ['📷 Camera Active', 'Switched to camera mode.'],
+        screen: ['🖥️ Sharing Screen', 'Your full screen is now live!'],
+        combo: ['🧑‍💻 Screen + Facecam Active', 'Sharing screen with your facecam in the corner!']
+      };
+      window.showToast?.(toastLabels[mode][0], toastLabels[mode][1], 'success');
+    } catch {
+      window.showToast?.('Permission Denied', 'Please allow screen/camera permission in your browser.', 'error');
+    }
   }
 
-  // Subscribe to state changes
-  state.subscribe(renderClassroom);
-  renderClassroom();
+  document.getElementById('btn-live-switch-camera')?.addEventListener('click', () => switchLiveBroadcastSource('camera'));
+  document.getElementById('btn-live-switch-screen')?.addEventListener('click', () => switchLiveBroadcastSource('screen'));
+  document.getElementById('btn-live-switch-combo')?.addEventListener('click', () => switchLiveBroadcastSource('combo'));
+
+  // End Live Stream & Save Recorded Video permanently
+  document.getElementById('btn-classroom-end-live')?.addEventListener('click', async () => {
+    const endBtn = document.getElementById('btn-classroom-end-live');
+    if (endBtn) {
+      endBtn.disabled = true;
+      endBtn.textContent = '⏳ Saving Recording...';
+    }
+
+    try {
+      // 1. Flush & stop MediaRecorder reliably so all chunks are captured
+      if (window.activeLiveRecorder && window.activeLiveRecorder.state !== 'inactive') {
+        try { window.activeLiveRecorder.requestData(); } catch {}
+        await new Promise((resolve) => {
+          window.activeLiveRecorder.onstop = resolve;
+          window.activeLiveRecorder.stop();
+          setTimeout(resolve, 800);
+        });
+      }
+
+      // 2. Stop all Camera / Screen / Mixer tracks
+      stopLiveCanvasMixer();
+      if (window.activeLocalLiveStream) {
+        window.activeLocalLiveStream.getTracks().forEach(t => t.stop());
+        window.activeLocalLiveStream = null;
+      }
+
+      // 3. Upload recorded video blob to /api/upload-video
+      let recordedVideoUrl = course.videoUrl || '';
+      if (Array.isArray(window.liveRecordedChunks) && window.liveRecordedChunks.length > 0) {
+        const blob = new Blob(window.liveRecordedChunks, { type: 'video/webm' });
+        window.liveRecordedChunks = [];
+
+        if (blob.size > 0) {
+          const fd = new FormData();
+          fd.append('videoFile', blob, `live-recording-${Date.now()}.webm`);
+          const headers = {};
+          if (auth.token) headers['Authorization'] = `Bearer ${auth.token}`;
+
+          const upRes = await fetch('/api/upload-video', {
+            method: 'POST',
+            credentials: 'include',
+            headers,
+            body: fd
+          });
+          const upData = await upRes.json();
+          if (upRes.ok && upData.success && upData.videoUrl) {
+            recordedVideoUrl = upData.videoUrl;
+          }
+        }
+      }
+
+      // 4. Update course record in backend with recordedVideoUrl and isLive = false
+      const headers = { 'Content-Type': 'application/json' };
+      if (auth.token) headers['Authorization'] = `Bearer ${auth.token}`;
+
+      await fetch(`/api/courses/${course.id}`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers,
+        body: JSON.stringify({
+          title: course.title,
+          category: course.category,
+          categoryName: course.categoryName,
+          desc: course.desc || '',
+          notes: course.notes || '',
+          thumbnail: course.thumbnail || '',
+          isLive: false,
+          format: 'Recorded Live',
+          duration: 'Recorded',
+          videoUrl: recordedVideoUrl
+        })
+      });
+
+      course.isLive = false;
+      course.videoUrl = recordedVideoUrl;
+      await state.loadCoursesFromDB();
+
+      window.showToast?.('⏹ Live Ended & Saved', 'Your recorded live session is now playable on the feed!', 'success');
+      renderClassroom();
+    } catch (err) {
+      console.error('End live error:', err);
+      window.showToast?.('Error', 'Could not finalize live stream.', 'error');
+      if (endBtn) {
+        endBtn.disabled = false;
+        endBtn.textContent = '⏹ End Live Stream';
+      }
+    }
+  });
+
+  // Back to Feed
+  document.getElementById('btn-classroom-back')?.addEventListener('click', () => {
+    if (navigateCallback) navigateCallback('marketplace');
+  });
+
+  // Open Creator Public Channel
+  document.querySelector('.js-watch-open-creator')?.addEventListener('click', () => {
+    openCreatorChannel({
+      id: course.userId || null,
+      fullName: creatorName,
+      avatar: resolvedAvatar
+    });
+  });
+
+  // Switch Bottom Tabs
+  document.querySelectorAll('.js-watch-bottom-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      activeBottomTab = btn.getAttribute('data-tab') || 'comments';
+      renderClassroom();
+    });
+  });
+
+  // Owner: Upload file or update notes right from the Lesson Notes & Code tab (even while live!)
+  document.getElementById('live-classroom-notes-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const saveBtn = document.getElementById('btn-save-classroom-notes');
+    const newText = document.getElementById('classroom-live-notes-text')?.value.trim() || '';
+    const fileInput = document.getElementById('classroom-live-notes-file');
+    const file = fileInput?.files?.[0];
+
+    try {
+      if (saveBtn) {
+        saveBtn.disabled = true;
+        saveBtn.textContent = '⏳ Uploading...';
+      }
+
+      const headers = {};
+      if (auth.token) headers['Authorization'] = `Bearer ${auth.token}`;
+
+      let newAttachmentLine = '';
+      if (file) {
+        const fd = new FormData();
+        fd.append('notesFile', file);
+        const upRes = await fetch('/api/upload-notes-file', {
+          method: 'POST',
+          credentials: 'include',
+          headers,
+          body: fd
+        });
+        const upData = await upRes.json();
+        if (!upRes.ok || !upData.success) throw new Error(upData.error || 'File upload failed');
+        newAttachmentLine = `📎 Attached File: ${upData.fileName} (${window.location.origin}${upData.fileUrl})`;
+      }
+
+      const existingAttachments = (course.notes || '').match(/📎 Attached File:[^\n]+/g) || [];
+      if (newAttachmentLine) existingAttachments.push(newAttachmentLine);
+
+      const combinedNotes = [newText, ...existingAttachments].filter(Boolean).join('\n\n');
+
+      const patchRes = await fetch(`/api/courses/${course.id}/notes`, {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notes: combinedNotes })
+      });
+      const patchData = await patchRes.json();
+      if (!patchRes.ok || !patchData.success) throw new Error(patchData.error || 'Could not save notes');
+
+      course.notes = combinedNotes;
+      window.showToast?.('✅ Updated!', 'Lesson notes & files updated for viewers.', 'success');
+      renderClassroom();
+    } catch (err) {
+      window.showToast?.('Error', err.message || 'Failed to update notes.', 'error');
+    } finally {
+      if (saveBtn) {
+        saveBtn.disabled = false;
+        saveBtn.textContent = '📤 Publish Notes / File';
+      }
+    }
+  });
+
+  // Post New Comment
+  document.getElementById('watch-comment-form')?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const input = document.getElementById('watch-comment-input');
+    const text = input?.value.trim();
+    if (!text) return;
+
+    const authorName = auth.isAuthenticated() && auth.user?.fullName ? auth.user.fullName : (state.user?.name || 'Guest Learner');
+    const authorAvatar = (auth.isAuthenticated() && auth.user?.avatar) || state.user?.avatar || '';
+
+    saveCourseComment(course.id, {
+      id: 'cmt-' + Date.now(),
+      author: authorName,
+      avatar: authorAvatar,
+      text,
+      createdAt: 'Just now'
+    });
+
+    window.showToast?.('💬 Comment Posted', 'Your comment has been added.', 'success');
+    renderClassroom();
+  });
+
+  // Like Button
+  document.getElementById('btn-watch-like')?.addEventListener('click', () => {
+    const liked = getStoredIds(LIKED_VIDEOS_KEY);
+    const disliked = getStoredIds(DISLIKED_VIDEOS_KEY);
+    const alreadyLiked = liked.includes(course.id);
+
+    if (alreadyLiked) {
+      setStoredIds(LIKED_VIDEOS_KEY, liked.filter(id => id !== course.id));
+      course.supportCount = Math.max(0, (course.supportCount || 1) - 1);
+    } else {
+      setStoredIds(LIKED_VIDEOS_KEY, [...liked, course.id]);
+      if (disliked.includes(course.id)) {
+        setStoredIds(DISLIKED_VIDEOS_KEY, disliked.filter(id => id !== course.id));
+      }
+      state.supportCourse(course.id);
+      window.showToast?.('👍 Liked!', 'Added to your liked videos.', 'success');
+    }
+    renderClassroom();
+  });
+
+  // Dislike Button
+  document.getElementById('btn-watch-dislike')?.addEventListener('click', () => {
+    const disliked = getStoredIds(DISLIKED_VIDEOS_KEY);
+    const liked = getStoredIds(LIKED_VIDEOS_KEY);
+    const alreadyDisliked = disliked.includes(course.id);
+
+    if (alreadyDisliked) {
+      setStoredIds(DISLIKED_VIDEOS_KEY, disliked.filter(id => id !== course.id));
+    } else {
+      setStoredIds(DISLIKED_VIDEOS_KEY, [...disliked, course.id]);
+      if (liked.includes(course.id)) {
+        setStoredIds(LIKED_VIDEOS_KEY, liked.filter(id => id !== course.id));
+        course.supportCount = Math.max(0, (course.supportCount || 1) - 1);
+      }
+      window.showToast?.('👎 Feedback Recorded', 'You disliked this video.', 'info');
+    }
+    renderClassroom();
+  });
+
+  // Share & Copy Link
+  document.getElementById('btn-watch-share')?.addEventListener('click', async () => {
+    const shareUrl = `${window.location.origin}/?video=${encodeURIComponent(course.id)}`;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(shareUrl);
+      }
+      if (navigator.share) {
+        navigator.share({ title: course.title, url: shareUrl }).catch(() => {});
+      }
+      window.showToast?.('🔗 Link Copied!', 'Video link copied to clipboard.', 'success');
+    } catch {
+      window.prompt('Copy this video link:', shareUrl);
+    }
+  });
+
+  // Save to Playlist
+  document.getElementById('btn-watch-save')?.addEventListener('click', () => {
+    const nowSaved = toggleSaveToPlaylist(course.id);
+    window.showToast?.(
+      nowSaved ? '🔖 Saved to Playlist' : 'Removed from Playlist',
+      nowSaved ? 'Find it anytime in your Saved Playlist filter.' : 'Removed from your saved playlist.',
+      'success'
+    );
+    renderClassroom();
+  });
+
+  // Download Video
+  document.getElementById('btn-watch-download')?.addEventListener('click', () => {
+    if (!course.videoUrl) {
+      window.showToast?.('Unavailable', 'No downloadable video file found.', 'error');
+      return;
+    }
+    const a = document.createElement('a');
+    a.href = course.videoUrl;
+    a.download = `${(course.title || 'video').replace(/[^a-z0-9_-]/gi, '_')}.webm`;
+    a.target = '_blank';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.showToast?.('⬇️ Download Started', `Downloading "${course.title}"...`, 'info');
+  });
+
+  // Report Video
+  document.getElementById('btn-watch-report')?.addEventListener('click', () => {
+    openReportModal({
+      type: 'video',
+      id: course.id,
+      title: course.title
+    });
+  });
+}
+
+// =====================================================================
+// FLOATING BOTTOM-RIGHT MINI-PLAYER WITH CLOSE (✕) BUTTON
+// =====================================================================
+export function dockVideoToMiniPlayer() {
+  const mainVideo = document.getElementById('classroom-main-video');
+  if (!mainVideo || mainVideo.paused || mainVideo.ended) return;
+
+  const activeCourse = state.courses.find(c => String(c.id) === String(state.activeCourseId));
+  if (!activeCourse || !activeCourse.videoUrl) return;
+
+  const currentTime = mainVideo.currentTime || 0;
+  mainVideo.pause();
+
+  removeFloatingMiniPlayer(false);
+
+  const mini = document.createElement('div');
+  mini.id = 'floating-mini-player';
+  mini.style.cssText = `
+    position: fixed; right: 20px; bottom: 20px; width: 310px; background: #0f172a;
+    border: 1px solid rgba(56, 189, 248, 0.45); border-radius: 14px; overflow: hidden;
+    box-shadow: 0 18px 40px rgba(0,0,0,0.75); z-index: 9999;
+  `;
+
+  mini.innerHTML = `
+    <div style="position: relative; background: #000; aspect-ratio: 16 / 9;">
+      <video id="mini-player-video" src="${activeCourse.videoUrl}" controls playsinline style="width: 100%; height: 100%; object-fit: contain; display: block;"></video>
+      <button 
+        type="button" 
+        id="btn-close-mini-player" 
+        title="Close mini-player"
+        style="position: absolute; top: 8px; right: 8px; width: 26px; height: 26px; border-radius: 50%; background: rgba(15, 23, 42, 0.88); color: #f8fafc; border: 1px solid rgba(255,255,255,0.2); font-size: 0.85rem; cursor: pointer; display: flex; align-items: center; justify-content: center; z-index: 10;"
+      >
+        ✕
+      </button>
+    </div>
+    <div id="mini-player-expand" style="padding: 9px 12px; display: flex; align-items: center; justify-content: space-between; cursor: pointer;">
+      <span style="font-size: 0.8rem; font-weight: 600; color: #f8fafc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px;">
+        ${escapeHtml(activeCourse.title)}
+      </span>
+      <span style="font-size: 0.72rem; color: #38bdf8; font-weight: 600;">Expand ↗</span>
+    </div>
+  `;
+
+  document.body.appendChild(mini);
+
+  const miniVid = document.getElementById('mini-player-video');
+  if (miniVid) {
+    miniVid.currentTime = currentTime;
+    miniVid.play().catch(() => {});
+  }
+
+  document.getElementById('btn-close-mini-player')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    removeFloatingMiniPlayer(true);
+  });
+
+  document.getElementById('mini-player-expand')?.addEventListener('click', () => {
+    if (navigateCallback) navigateCallback('classroom');
+  });
+}
+
+export function removeFloatingMiniPlayer(stopPlayback = false) {
+  const mini = document.getElementById('floating-mini-player');
+  if (!mini) return;
+
+  const miniVid = document.getElementById('mini-player-video');
+  const mainVid = document.getElementById('classroom-main-video');
+
+  if (miniVid && mainVid && !stopPlayback) {
+    const resumeTime = miniVid.currentTime || 0;
+    const wasPlaying = !miniVid.paused;
+    mainVid.currentTime = resumeTime;
+    if (wasPlaying) mainVid.play().catch(() => {});
+  }
+
+  miniVid?.pause();
+  mini.remove();
+}
+
+function escapeHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
