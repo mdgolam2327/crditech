@@ -38,3 +38,16 @@ htmlcov/
 # Temporary files
 *.tmp
 *.swp
+
+# SQLite database files
+*.db
+*.db-wal
+*.db-shm
+
+# User uploads (videos, thumbnails, attachments)
+uploads/
+
+# SQLite database files
+*.db
+*.db-wal
+*.db-shm

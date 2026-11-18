@@ -42,7 +42,9 @@ import {
   handleUpdateCourseNotes,
   handleUpdateCourse,
   handleDeleteCourse,
-  handleCreateReport
+  handleCreateReport,
+  handleToggleFollow,
+  handleGetFollowStatus
 } from './server/userData.js';
 
 dotenv.config();
@@ -67,7 +69,43 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser(SESSION_SECRET));
 
-// 3. Security Headers & Sensitive File Shield
+// 3. Lightweight Rate Limiting (Protects Auth & Reports from Spam/Brute Force)
+const rateLimitMap = new Map();
+function createRateLimiter({ windowMs = 60 * 1000, max = 30, message = 'Too many requests, please try again later.' } = {}) {
+  return (req, res, next) => {
+    const ip = req.ip || req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown';
+    const key = `${req.path}:${ip}`;
+    const now = Date.now();
+    let record = rateLimitMap.get(key);
+
+    if (!record || now > record.resetTime) {
+      record = { count: 1, resetTime: now + windowMs };
+      rateLimitMap.set(key, record);
+      return next();
+    }
+
+    record.count++;
+    if (record.count > max) {
+      return res.status(429).json({ error: message });
+    }
+    next();
+  };
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, record] of rateLimitMap.entries()) {
+    if (now > record.resetTime) {
+      rateLimitMap.delete(key);
+    }
+  }
+}, 5 * 60 * 1000);
+
+const authRateLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 20, message: 'Too many authentication attempts. Please wait 15 minutes.' });
+const otpRateLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 5, message: 'Too many verification code requests. Please wait 1 minute.' });
+const reportRateLimiter = createRateLimiter({ windowMs: 5 * 60 * 1000, max: 10, message: 'Too many reports submitted. Please wait 5 minutes.' });
+
+// 4. Security Headers & Sensitive File Shield
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
@@ -200,13 +238,13 @@ app.get('/api/health', (req, res) => {
 
 // Authentication & Verification
 app.get('/api/auth/captcha', handleGetCaptcha);
-app.post('/api/auth/send-email-otp', handleSendEmailOtp);
+app.post('/api/auth/send-email-otp', otpRateLimiter, handleSendEmailOtp);
 app.post('/api/auth/verify-email-otp', handleVerifyEmailOtp);
-app.post('/api/auth/send-phone-otp', handleSendPhoneOtp);
+app.post('/api/auth/send-phone-otp', otpRateLimiter, handleSendPhoneOtp);
 app.post('/api/auth/verify-phone-otp', handleVerifyPhoneOtp);
-app.post('/api/auth/register', handleRegister);
-app.post('/api/auth/login', handleLogin);
-app.post('/api/auth/send-login-otp', handleSendLoginOtp);
+app.post('/api/auth/register', authRateLimiter, handleRegister);
+app.post('/api/auth/login', authRateLimiter, handleLogin);
+app.post('/api/auth/send-login-otp', otpRateLimiter, handleSendLoginOtp);
 app.post('/api/auth/logout', handleLogout);
 app.get('/api/auth/me', handleGetMe);
 app.post('/api/user/address', requireAuth, handleUpdateAddress);
@@ -225,7 +263,11 @@ app.get('/api/creators/:userId', handleGetPublicCreatorProfile);
 app.put('/api/courses/:courseId', requireAuth, handleUpdateCourse);
 app.delete('/api/courses/:courseId', requireAuth, handleDeleteCourse);
 app.patch('/api/courses/:courseId/notes', requireAuth, handleUpdateCourseNotes);
-app.post('/api/reports', handleCreateReport);
+app.post('/api/reports', reportRateLimiter, handleCreateReport);
+
+// Following System (Follow / Unfollow / Status)
+app.post('/api/users/:userId/follow', requireAuth, handleToggleFollow);
+app.get('/api/users/:userId/follow-status', handleGetFollowStatus);
 
 // 5. Serve Static Frontend Files
 app.use(express.static(path.resolve(__dirname, './')));

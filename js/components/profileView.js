@@ -73,9 +73,19 @@ export async function openCreatorChannel(creatorInfo) {
 }
 
 // Reset override when user clicks their own profile icon in Navbar
-export function openOwnProfile() {
+export async function openOwnProfile() {
   viewedCreatorOverride = null;
   isCustomizationPageOpen = false;
+  if (auth.isAuthenticated() && auth.user?.id) {
+    try {
+      const res = await fetch(`/api/users/${encodeURIComponent(auth.user.id)}/follow-status`, { credentials: 'include' });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        auth.user.followerCount = data.followerCount;
+        auth.user.followingCount = data.followingCount;
+      }
+    } catch {}
+  }
   if (navigateCallback) navigateCallback('profile');
   else renderProfileView();
 }
@@ -174,7 +184,7 @@ function renderChannelPage(mount, profileUser, isOwner) {
                 </span>
               </div>
               <p style="font-size: 0.85rem; color: var(--text-secondary); margin: 5px 0 0;">
-                <strong>${channelVideos.length}</strong> Videos • <strong>${totalViews}</strong> Total Views
+                <strong id="channel-followers-count">${profileUser.followerCount ?? 0}</strong> Followers • <strong>${channelVideos.length}</strong> Videos • <strong>${totalViews}</strong> Total Views
                 ${isOwner ? ` • <strong>₢ ${state.user?.credits ?? profileUser.credits ?? 50}</strong> Credits` : ''}
               </p>
             </div>
@@ -187,6 +197,10 @@ function renderChannelPage(mount, profileUser, isOwner) {
                 ⚙️ Profile Customization
               </button>
             ` : `
+              <button class="btn ${profileUser.isFollowing ? 'btn-secondary' : 'btn-primary'}" id="btn-profile-follow" style="font-size: 0.84rem; padding: 9px 18px; border-radius: 999px; font-weight: 700; display: inline-flex; align-items: center; gap: 6px; ${profileUser.isFollowing ? 'border-color: rgba(56, 189, 248, 0.4); color: #38bdf8;' : ''}">
+                <span>${profileUser.isFollowing ? '✓' : '+'}</span>
+                <span>${profileUser.isFollowing ? 'Following' : 'Follow'}</span>
+              </button>
               <button class="btn btn-secondary" id="btn-report-creator-profile" style="font-size: 0.84rem; padding: 9px 16px; color: #f87171; border-color: rgba(239, 68, 68, 0.35); display: inline-flex; align-items: center; gap: 6px;">
                 <span>🚩</span> Report Channel
               </button>
@@ -280,6 +294,43 @@ function renderChannelPage(mount, profileUser, isOwner) {
       window.scrollTo({ top: 0, behavior: 'smooth' });
     });
   } else {
+    document.getElementById('btn-profile-follow')?.addEventListener('click', async () => {
+      if (!auth.isAuthenticated()) {
+        window.showToast?.('Sign In Required', 'Please log in to follow creators.', 'info');
+        document.getElementById('btn-header-login')?.click();
+        return;
+      }
+      const targetId = profileUser.id;
+      if (!targetId) {
+        window.showToast?.('Notice', 'Cannot follow an unverified creator.', 'info');
+        return;
+      }
+
+      const followBtn = document.getElementById('btn-profile-follow');
+      if (followBtn) followBtn.disabled = true;
+
+      try {
+        const res = await fetch(`/api/users/${encodeURIComponent(targetId)}/follow`, {
+          method: 'POST',
+          credentials: 'include'
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          profileUser.isFollowing = data.isFollowing;
+          profileUser.followerCount = data.followerCount;
+          window.showToast?.('Following Updated', data.message, 'success');
+          renderProfileView();
+        } else {
+          window.showToast?.('Error', data.error || 'Failed to update follow status.', 'error');
+        }
+      } catch (err) {
+        console.error('Follow error:', err);
+        window.showToast?.('Error', 'Network error following creator.', 'error');
+      } finally {
+        if (followBtn) followBtn.disabled = false;
+      }
+    });
+
     document.getElementById('btn-report-creator-profile')?.addEventListener('click', () => {
       openReportModal({
         type: 'profile',

@@ -118,6 +118,13 @@ export function initDatabase() {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS user_follows (
+      follower_id TEXT NOT NULL,
+      following_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (follower_id, following_id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
     CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone);
     CREATE INDEX IF NOT EXISTS idx_sessions_user ON user_sessions(user_id);
@@ -125,6 +132,8 @@ export function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_courses_user ON courses(user_id);
     CREATE INDEX IF NOT EXISTS idx_comments_course ON course_comments(course_id);
     CREATE INDEX IF NOT EXISTS idx_reports_target ON reports(target_type, target_id);
+    CREATE INDEX IF NOT EXISTS idx_follows_following ON user_follows(following_id);
+    CREATE INDEX IF NOT EXISTS idx_follows_follower ON user_follows(follower_id);
   `);
 
   const userColumns = [

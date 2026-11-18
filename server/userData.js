@@ -5,6 +5,7 @@
  */
 
 import { db } from './db.js';
+import { sendReportNotificationEmail } from './mailer.js';
 
 // -------------------------------------------------------------
 // GET USER'S PERSISTED DATA (GET /api/user/data)
@@ -537,6 +538,8 @@ export function handleUpdateUserProfile(req, res) {
 export function handleGetPublicCreatorProfile(req, res) {
   try {
     const { userId } = req.params;
+    const currentUserId = req.user?.id || req.userId || req.session?.userId || null;
+
     const creator = db.prepare(
       'SELECT id, full_name, avatar, bio FROM users WHERE id = ?'
     ).get(userId);
@@ -545,18 +548,136 @@ export function handleGetPublicCreatorProfile(req, res) {
       return res.status(404).json({ error: 'Creator profile not found.' });
     }
 
+    // Follower counts and follow status
+    let followerCount = 0;
+    let followingCount = 0;
+    let isFollowing = false;
+
+    try {
+      const fRow = db.prepare('SELECT COUNT(*) as count FROM user_follows WHERE following_id = ?').get(userId);
+      followerCount = fRow ? fRow.count : 0;
+
+      const fgRow = db.prepare('SELECT COUNT(*) as count FROM user_follows WHERE follower_id = ?').get(userId);
+      followingCount = fgRow ? fgRow.count : 0;
+
+      if (currentUserId) {
+        const isF = db.prepare('SELECT 1 FROM user_follows WHERE follower_id = ? AND following_id = ?').get(currentUserId, userId);
+        isFollowing = Boolean(isF);
+      }
+    } catch (e) {
+      // Graceful fallback if table is initializing
+    }
+
     return res.json({
       success: true,
       creator: {
         id: creator.id,
         fullName: creator.full_name,
         avatar: creator.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(creator.full_name || 'Creator')}`,
-        bio: creator.bio || ''
+        bio: creator.bio || '',
+        followerCount,
+        followingCount,
+        isFollowing
       }
     });
   } catch (err) {
     console.error('Get public creator error:', err);
     return res.status(500).json({ error: 'Failed to load creator channel.' });
+  }
+}
+
+// -------------------------------------------------------------
+// TOGGLE FOLLOW / UNFOLLOW CREATOR (POST /api/users/:userId/follow)
+// -------------------------------------------------------------
+export function handleToggleFollow(req, res) {
+  try {
+    const currentUserId = req.user?.id || req.userId || req.session?.userId;
+    if (!currentUserId) {
+      return res.status(401).json({ error: 'Authentication required to follow creators.' });
+    }
+
+    const targetUserId = req.params.userId;
+    if (!targetUserId) {
+      return res.status(400).json({ error: 'Target user ID is required.' });
+    }
+
+    if (String(currentUserId) === String(targetUserId)) {
+      return res.status(400).json({ error: 'You cannot follow your own channel.' });
+    }
+
+    const targetUser = db.prepare('SELECT id, full_name FROM users WHERE id = ?').get(targetUserId);
+    if (!targetUser) {
+      return res.status(404).json({ error: 'User does not exist.' });
+    }
+
+    const existingFollow = db.prepare(
+      'SELECT 1 FROM user_follows WHERE follower_id = ? AND following_id = ?'
+    ).get(currentUserId, targetUserId);
+
+    let isFollowing = false;
+    const now = new Date().toISOString();
+
+    if (existingFollow) {
+      db.prepare('DELETE FROM user_follows WHERE follower_id = ? AND following_id = ?').run(currentUserId, targetUserId);
+      isFollowing = false;
+    } else {
+      db.prepare('INSERT INTO user_follows (follower_id, following_id, created_at) VALUES (?, ?, ?)').run(currentUserId, targetUserId, now);
+      isFollowing = true;
+    }
+
+    const countRow = db.prepare('SELECT COUNT(*) as count FROM user_follows WHERE following_id = ?').get(targetUserId);
+    const followerCount = countRow ? countRow.count : 0;
+
+    return res.json({
+      success: true,
+      isFollowing,
+      followerCount,
+      message: isFollowing ? `You are now following ${targetUser.full_name}!` : `Unfollowed ${targetUser.full_name}.`
+    });
+  } catch (err) {
+    console.error('Toggle follow error:', err);
+    return res.status(500).json({ error: 'Failed to update follow status.' });
+  }
+}
+
+// -------------------------------------------------------------
+// GET FOLLOW STATUS & STATS (GET /api/users/:userId/follow-status)
+// -------------------------------------------------------------
+export function handleGetFollowStatus(req, res) {
+  try {
+    const targetUserId = req.params.userId;
+    const currentUserId = req.user?.id || req.userId || req.session?.userId || null;
+
+    if (!targetUserId) {
+      return res.status(400).json({ error: 'Target user ID is required.' });
+    }
+
+    let followerCount = 0;
+    let followingCount = 0;
+    let isFollowing = false;
+
+    try {
+      const countRow = db.prepare('SELECT COUNT(*) as count FROM user_follows WHERE following_id = ?').get(targetUserId);
+      followerCount = countRow ? countRow.count : 0;
+
+      const followingRow = db.prepare('SELECT COUNT(*) as count FROM user_follows WHERE follower_id = ?').get(targetUserId);
+      followingCount = followingRow ? followingRow.count : 0;
+
+      if (currentUserId) {
+        const isF = db.prepare('SELECT 1 FROM user_follows WHERE follower_id = ? AND following_id = ?').get(currentUserId, targetUserId);
+        isFollowing = Boolean(isF);
+      }
+    } catch (e) { }
+
+    return res.json({
+      success: true,
+      isFollowing,
+      followerCount,
+      followingCount
+    });
+  } catch (err) {
+    console.error('Get follow status error:', err);
+    return res.status(500).json({ error: 'Failed to get follow status.' });
   }
 }
 
@@ -598,14 +719,21 @@ export function handleUpdateCourse(req, res) {
       ? null
       : (c.cashFee !== undefined ? (parseFloat(c.cashFee) || 0) : existing.cash_fee);
 
+    const isLive = c.isLive !== undefined ? (c.isLive ? 1 : 0) : (existing.is_live ?? 0);
+    const format = c.format !== undefined ? c.format : (existing.format || 'Standard');
+    const duration = c.duration !== undefined ? c.duration : (existing.duration || '00:00');
+    const videoUrl = c.videoUrl !== undefined ? c.videoUrl : (existing.video_url || '');
+
     db.prepare(`
       UPDATE courses
       SET title = ?, category = ?, category_name = ?, desc = ?, notes = ?,
-          thumbnail = ?, tags = ?, pricing_model = ?, credit_price = ?, cash_fee = ?
+          thumbnail = ?, tags = ?, pricing_model = ?, credit_price = ?, cash_fee = ?,
+          is_live = ?, format = ?, duration = ?, video_url = ?
       WHERE id = ? AND user_id = ?
     `).run(
       title, category, categoryName, desc, notes,
       thumbnail, tags, pricingModel, creditPrice, cashFee,
+      isLive, format, duration, videoUrl,
       courseId, userId
     );
 
@@ -733,6 +861,18 @@ export function handleCreateReport(req, res) {
     console.log(`Reporter:     ${finalReporterEmail || 'Anonymous'} ${reporterUserId ? `(User ID: ${reporterUserId})` : ''}`);
     console.log(`Sent At:      ${now}`);
     console.log(`======================================================\n`);
+
+    // Dispatch real email via SMTP if configured
+    sendReportNotificationEmail({
+      reportId,
+      targetType,
+      targetId,
+      targetTitle,
+      category,
+      details,
+      reporterEmail: finalReporterEmail,
+      reporterUserId
+    }).catch(err => console.error('Background report email dispatch error:', err));
 
     return res.status(201).json({
       success: true,

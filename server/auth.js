@@ -7,6 +7,7 @@
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 import { db } from './db.js';
+import { sendOtpEmail } from './mailer.js';
 
 const SESSION_COOKIE_NAME = 'crditeach_session';
 const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -122,12 +123,17 @@ export function handleSendEmailOtp(req, res) {
       VALUES (?, ?, 'email_otp', ?, ?)
     `).run(generateId('ver_'), email, code, expiresAt);
 
-    console.log(`\n📧 [EMAIL OTP SIMULATION] Sent to ${email} -> Verification Code: [ ${code} ]`);
+    console.log(`\n📧 [EMAIL OTP DISPATCH] Sent to ${email} -> Verification Code: [ ${code} ]`);
+
+    // Dispatch real email via SMTP if configured
+    sendOtpEmail(email, code).catch(err => console.error('Background email OTP dispatch error:', err));
+
+    const shouldShowDevCode = process.env.NODE_ENV !== 'production' && process.env.OTP_DEV_MODE === 'true';
 
     return res.json({
       success: true,
       message: `Verification code sent to ${email}`,
-      devCode: code // Displayed for seamless local testing
+      ...(shouldShowDevCode ? { devCode: code } : {})
     });
   } catch (err) {
     console.error('Send email OTP error:', err);
@@ -199,10 +205,12 @@ export function handleSendPhoneOtp(req, res) {
 
     console.log(`\n📱 [SMS OTP SIMULATION] Sent to ${phone} -> Verification Code: [ ${code} ]`);
 
+    const shouldShowDevCode = process.env.NODE_ENV !== 'production' && process.env.OTP_DEV_MODE === 'true';
+
     return res.json({
       success: true,
       message: `SMS code sent to ${phone}`,
-      devCode: code
+      ...(shouldShowDevCode ? { devCode: code } : {})
     });
   } catch (err) {
     console.error('Send phone OTP error:', err);
@@ -464,12 +472,18 @@ export function handleSendLoginOtp(req, res) {
       VALUES (?, ?, 'login_otp', ?, ?)
     `).run(generateId('ver_'), user.email, code, expiresAt);
 
-    console.log(`\n🔑 [LOGIN OTP SIMULATION] Sent to ${user.email} / ${user.phone} -> Login Code: [ ${code} ]`);
+    console.log(`\n🔑 [LOGIN OTP DISPATCH] Sent to ${user.email} / ${user.phone} -> Login Code: [ ${code} ]`);
+
+    if (user.email) {
+      sendOtpEmail(user.email, code).catch(err => console.error('Background login OTP email error:', err));
+    }
+
+    const shouldShowDevCode = process.env.NODE_ENV !== 'production' && process.env.OTP_DEV_MODE === 'true';
 
     return res.json({
       success: true,
       message: `Login OTP sent to your registered account (${user.email})`,
-      devCode: code
+      ...(shouldShowDevCode ? { devCode: code } : {})
     });
   } catch (err) {
     console.error('Send login OTP error:', err);

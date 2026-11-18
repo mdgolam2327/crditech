@@ -213,26 +213,40 @@ export function renderClassroom() {
           </h1>
 
           <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px;">
-            <div 
-              class="js-watch-open-creator"
-              style="display: flex; align-items: center; gap: 12px; cursor: pointer;"
-              title="Visit ${escapeHtml(creatorName)}'s channel"
-            >
-              <img 
-                src="${resolvedAvatar}" 
-                onerror="this.onerror=null; this.src='${fallbackAvatar}';"
-                alt="${escapeHtml(creatorName)}" 
-                style="width: 44px; height: 44px; border-radius: 50%; object-fit: cover; border: 2px solid rgba(56, 189, 248, 0.45); background: #1e293b;"
-              />
-              <div>
-                <div style="font-weight: 700; font-size: 0.96rem; color: var(--text-pure); display: flex; align-items: center; gap: 5px;">
-                  <span>${escapeHtml(creatorName)}</span>
-                  <span style="color: #38bdf8; font-size: 0.78rem;">✓</span>
-                </div>
-                <div style="font-size: 0.78rem; color: var(--text-secondary);">
-                  ${activeCourse.views || 0} views
+            <div style="display: flex; align-items: center; gap: 14px; flex-wrap: wrap;">
+              <div 
+                class="js-watch-open-creator"
+                style="display: flex; align-items: center; gap: 12px; cursor: pointer;"
+                title="Visit ${escapeHtml(creatorName)}'s channel"
+              >
+                <img 
+                  src="${resolvedAvatar}" 
+                  onerror="this.onerror=null; this.src='${fallbackAvatar}';"
+                  alt="${escapeHtml(creatorName)}" 
+                  style="width: 44px; height: 44px; border-radius: 50%; object-fit: cover; border: 2px solid rgba(56, 189, 248, 0.45); background: #1e293b;"
+                />
+                <div>
+                  <div style="font-weight: 700; font-size: 0.96rem; color: var(--text-pure); display: flex; align-items: center; gap: 5px;">
+                    <span>${escapeHtml(creatorName)}</span>
+                    <span style="color: #38bdf8; font-size: 0.78rem;">✓</span>
+                  </div>
+                  <div style="font-size: 0.78rem; color: var(--text-secondary);" id="watch-channel-stats">
+                    <span id="watch-follower-count-badge">0</span> followers • ${activeCourse.views || 0} views
+                  </div>
                 </div>
               </div>
+
+              ${!isCurrentUserVideo && activeCourse.userId ? `
+                <button 
+                  type="button" 
+                  id="btn-watch-follow"
+                  style="border-radius: 999px; padding: 7px 16px; font-size: 0.8rem; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; transition: all 0.2s;"
+                  class="btn btn-primary"
+                >
+                  <span id="watch-follow-symbol">+</span>
+                  <span id="watch-follow-text">Follow</span>
+                </button>
+              ` : ''}
             </div>
 
             <!-- YouTube-Style Action Pills -->
@@ -690,6 +704,17 @@ function attachClassroomListeners(course, creatorName, resolvedAvatar, isOwner) 
       const headers = { 'Content-Type': 'application/json' };
       if (auth.token) headers['Authorization'] = `Bearer ${auth.token}`;
 
+      await fetch(`/api/courses/${course.id}/end-live`, {
+        method: 'POST',
+        credentials: 'include',
+        headers,
+        body: JSON.stringify({
+          recordedVideoUrl: recordedVideoUrl,
+          duration: 'Recorded Stream'
+        })
+      });
+
+      // Also ensure course metadata is preserved
       await fetch(`/api/courses/${course.id}`, {
         method: 'PUT',
         credentials: 'include',
@@ -703,7 +728,7 @@ function attachClassroomListeners(course, creatorName, resolvedAvatar, isOwner) 
           thumbnail: course.thumbnail || '',
           isLive: false,
           format: 'Recorded Live',
-          duration: 'Recorded',
+          duration: 'Recorded Stream',
           videoUrl: recordedVideoUrl
         })
       });
@@ -826,6 +851,79 @@ function attachClassroomListeners(course, creatorName, resolvedAvatar, isOwner) 
     window.showToast?.('💬 Comment Posted', 'Your comment has been added.', 'success');
     renderClassroom();
   });
+
+  // Follow / Unfollow Creator from Watch View
+  if (!isCurrentUserVideo && course.userId) {
+    const followBtn = document.getElementById('btn-watch-follow');
+    const followSymbol = document.getElementById('watch-follow-symbol');
+    const followText = document.getElementById('watch-follow-text');
+    const badge = document.getElementById('watch-follower-count-badge');
+
+    // Fetch initial follow status & follower count
+    fetch(`/api/users/${encodeURIComponent(course.userId)}/follow-status`, { credentials: 'include' })
+      .then(r => r.json())
+      .then(d => {
+        if (d.success) {
+          if (badge) badge.textContent = d.followerCount;
+          if (d.isFollowing) {
+            followBtn?.classList.remove('btn-primary');
+            followBtn?.classList.add('btn-secondary');
+            if (followBtn) {
+              followBtn.style.color = '#38bdf8';
+              followBtn.style.borderColor = 'rgba(56, 189, 248, 0.4)';
+              followBtn.style.background = 'rgba(56, 189, 248, 0.14)';
+            }
+            if (followSymbol) followSymbol.textContent = '✓';
+            if (followText) followText.textContent = 'Following';
+          }
+        }
+      })
+      .catch(() => {});
+
+    followBtn?.addEventListener('click', async () => {
+      if (!auth.isAuthenticated()) {
+        window.showToast?.('Sign In Required', 'Please log in to follow creators.', 'info');
+        document.getElementById('btn-header-login')?.click();
+        return;
+      }
+
+      followBtn.disabled = true;
+      try {
+        const res = await fetch(`/api/users/${encodeURIComponent(course.userId)}/follow`, {
+          method: 'POST',
+          credentials: 'include'
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          if (badge) badge.textContent = data.followerCount;
+          if (data.isFollowing) {
+            followBtn.classList.remove('btn-primary');
+            followBtn.classList.add('btn-secondary');
+            followBtn.style.color = '#38bdf8';
+            followBtn.style.borderColor = 'rgba(56, 189, 248, 0.4)';
+            followBtn.style.background = 'rgba(56, 189, 248, 0.14)';
+            if (followSymbol) followSymbol.textContent = '✓';
+            if (followText) followText.textContent = 'Following';
+          } else {
+            followBtn.classList.remove('btn-secondary');
+            followBtn.classList.add('btn-primary');
+            followBtn.style.color = '#020617';
+            followBtn.style.borderColor = '';
+            followBtn.style.background = '#38bdf8';
+            if (followSymbol) followSymbol.textContent = '+';
+            if (followText) followText.textContent = 'Follow';
+          }
+          window.showToast?.('Following Updated', data.message, 'success');
+        } else {
+          window.showToast?.('Notice', data.error || 'Could not update follow status.', 'error');
+        }
+      } catch (err) {
+        window.showToast?.('Error', 'Network error following creator.', 'error');
+      } finally {
+        followBtn.disabled = false;
+      }
+    });
+  }
 
   // Like Button
   document.getElementById('btn-watch-like')?.addEventListener('click', () => {
