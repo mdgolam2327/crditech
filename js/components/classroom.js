@@ -7,12 +7,13 @@
   * YouTube-style Action Bar & Bottom Tabs (Comments & Q&A, Lesson Notes & Code, Course Overview)
  */
 
-import { state } from '../state.js';
+import { state, formatINR } from '../state.js';
 import { auth } from '../auth.js';
 import { openCreatorChannel } from './profileView.js';
 import {
-  getSavedPlaylistIds,
-  toggleSaveToPlaylist,
+  isItemSaved,
+  toggleSaveItem,
+  downloadMedia,
   openReportModal
 } from './videoActions.js';
 
@@ -119,7 +120,7 @@ export function renderClassroom() {
 
   const isLiked = likedIds.includes(activeCourse.id);
   const isDisliked = dislikedIds.includes(activeCourse.id);
-  const isSaved = savedIds.includes(activeCourse.id);
+  const isSaved = isItemSaved(activeCourse.id);
   const likeCount = activeCourse.supportCount || 0;
   const comments = getCourseComments(activeCourse.id);
 
@@ -486,7 +487,7 @@ function renderOverviewTab(course, cleanDesc) {
           </span>
         ` : ''}
         <span style="font-size: 0.78rem; padding: 4px 10px; border-radius: 8px; background: rgba(255,255,255,0.06); color: #e2e8f0;">
-          Access: <strong>${course.pricingModel === 'free' || course.creditPrice === 0 ? 'Free • Ad-Free' : `${course.creditPrice} Credits`}</strong>
+          Access: <strong>${course.pricingModel === 'free' || course.creditPrice === 0 ? 'Free • Ad-Free' : (course.cashFee ? formatINR(course.cashFee) : `₢ ${course.creditPrice}`)}</strong>
         </span>
       </div>
 
@@ -980,31 +981,14 @@ function attachClassroomListeners(course, creatorName, resolvedAvatar, isOwner) 
     }
   });
 
-  // Save to Playlist
-  document.getElementById('btn-watch-save')?.addEventListener('click', () => {
-    const nowSaved = toggleSaveToPlaylist(course.id);
-    window.showToast?.(
-      nowSaved ? '🔖 Saved to Playlist' : 'Removed from Playlist',
-      nowSaved ? 'Find it anytime in your Saved Playlist filter.' : 'Removed from your saved playlist.',
-      'success'
-    );
-    renderClassroom();
+  // Save / Bookmark
+  document.getElementById('btn-watch-save')?.addEventListener('click', async () => {
+    await toggleSaveItem(course.id, () => renderClassroom());
   });
 
   // Download Video
   document.getElementById('btn-watch-download')?.addEventListener('click', () => {
-    if (!course.videoUrl) {
-      window.showToast?.('Unavailable', 'No downloadable video file found.', 'error');
-      return;
-    }
-    const a = document.createElement('a');
-    a.href = course.videoUrl;
-    a.download = `${(course.title || 'video').replace(/[^a-z0-9_-]/gi, '_')}.webm`;
-    a.target = '_blank';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    window.showToast?.('⬇️ Download Started', `Downloading "${course.title}"...`, 'info');
+    downloadMedia(course);
   });
 
   // Report Video

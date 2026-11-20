@@ -1084,47 +1084,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupModalListeners();
   setupUploadAndLiveModals();
 
-  // Inject visible Log Out button in Navbar when user is authenticated
-  function ensureGlobalLogoutButton() {
-    if (!auth.isAuthenticated()) return;
-    if (document.getElementById('btn-global-logout')) return;
-
-    const navRight =
-      document.querySelector('.navbar-right') ||
-      document.querySelector('.nav-actions') ||
-      document.querySelector('header nav') ||
-      document.querySelector('header');
-
-    if (!navRight) return;
-
-    const logoutBtn = document.createElement('button');
-    logoutBtn.type = 'button';
-    logoutBtn.id = 'btn-global-logout';
-    logoutBtn.className = 'btn btn-secondary';
-    logoutBtn.innerHTML = '🚪 Log Out';
-    logoutBtn.style.cssText =
-      'border: 1px solid rgba(239, 68, 68, 0.5); color: #fca5a5; background: rgba(239, 68, 68, 0.12); padding: 7px 14px; font-size: 0.82rem; font-weight: 600; border-radius: 10px; cursor: pointer; margin-left: 8px;';
-
-    logoutBtn.addEventListener('click', async () => {
-      try {
-        await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
-      } catch (err) {
-        console.warn('Logout error:', err);
-      }
-      localStorage.removeItem('crditeach_token');
-      localStorage.removeItem('crditeach_user');
-      if (typeof auth.logout === 'function') {
-        await auth.logout();
-      }
-      window.showToast?.('Logged Out', 'You have been signed out safely.', 'info');
-      window.location.reload();
-    });
-
-    navRight.appendChild(logoutBtn);
-  }
-
-  ensureGlobalLogoutButton();
-
   // Support direct deep linking to shared videos (?video=courseId)
   try {
     const urlParams = new URLSearchParams(window.location.search);

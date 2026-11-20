@@ -16,6 +16,12 @@ const SAMPLE_COURSES = [];
 
 const INITIAL_SPONSORS = [];
 
+// Helper: Clean currency formatting in Indian Rupees (INR)
+export function formatINR(amount) {
+  const num = Math.round(Number(amount) || 0);
+  return '₹' + num.toLocaleString('en-IN');
+}
+
 class AppState {
   constructor() {
     this.listeners = [];
@@ -251,7 +257,7 @@ class AppState {
     if (this.user.cash < course.cashFee) {
       return {
         success: false,
-        message: `Insufficient USD balance ($${this.user.cash.toFixed(2)} vs $${course.cashFee.toFixed(2)} required).`
+        message: `Insufficient INR balance (${formatINR(this.user.cash)} vs ${formatINR(course.cashFee)} required).`
       };
     }
 
@@ -263,17 +269,17 @@ class AppState {
       id: 'tx-' + Date.now(),
       type: 'spend',
       title: `Paid Learner Fee for "${course.title}"`,
-      amount: `-$${course.cashFee.toFixed(2)}`,
+      amount: `-${formatINR(course.cashFee)}`,
       date: 'Just now'
     });
 
     this.saveState();
-    return { success: true, message: `Payment of $${course.cashFee.toFixed(2)} processed! Course unlocked in Ad-Free Classroom.` };
+    return { success: true, message: `Payment of ${formatINR(course.cashFee)} processed! Course unlocked in Ad-Free Classroom.` };
   }
 
   teachStudentSimulation(studentName = 'Alex Rivera', skillSubject = 'Fullstack Microservices') {
     const earnedCredits = 50;
-    const earnedCash = 35.00;
+    const earnedCash = 2975; // Standard INR peer coaching incentive (~₹2,975)
 
     this.user.studentsTaught += 1;
     this.user.credits += earnedCredits;
@@ -300,7 +306,7 @@ class AppState {
       id: 'tx-' + Date.now(),
       type: 'gain',
       title: `Taught student ${studentName}: "${skillSubject}"`,
-      amount: `+${earnedCredits} ₢ (+$${earnedCash.toFixed(2)})`,
+      amount: `+${earnedCredits} ₢ (+${formatINR(earnedCash)})`,
       date: 'Just now'
     });
 

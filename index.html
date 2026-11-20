@@ -97,9 +97,9 @@
           </div>
           <div class="wallet-divider"></div>
           <div class="wallet-stat cash-stat">
-            <span class="currency-symbol">$</span>
-            <span class="wallet-amount" id="user-cash">0.00</span>
-            <span class="wallet-label">Learner USD</span>
+            <span class="currency-symbol">₹</span>
+            <span class="wallet-amount" id="user-cash">0</span>
+            <span class="wallet-label">Learner INR (₹)</span>
           </div>
         </div>
 
@@ -172,20 +172,38 @@
           </button>
         </div>
 
-        <!-- Logged-In State: Profile Trigger Option (Requirement 5) -->
+        <!-- Logged-In State: Profile Trigger Option (Requirement 2: Dropdown Menu) -->
         <div class="auth-user-controls" id="auth-user-controls" style="display: none;">
-          <button class="profile-nav-btn" id="btn-open-profile" title="Click to view Profile">
-            <div class="avatar-ring-sm">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-                <circle cx="12" cy="7" r="4"></circle>
+          <div class="profile-dropdown-wrapper" style="position: relative;">
+            <button class="profile-nav-btn" id="btn-open-profile" title="Account Menu" aria-haspopup="true" aria-expanded="false">
+              <div class="avatar-ring-sm">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                  <circle cx="12" cy="7" r="4"></circle>
+                </svg>
+              </div>
+              <div class="profile-info-mini">
+                <span class="user-name" id="user-display-name">Profile</span>
+                <span class="user-role-tag">Account</span>
+              </div>
+              <svg class="chevron-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="margin-left: 4px; opacity: 0.7;">
+                <polyline points="6 9 12 15 18 9"></polyline>
               </svg>
+            </button>
+
+            <!-- Dropdown Menu Directly Below Profile with Exactly: View Your Profile & Sign Out -->
+            <div class="profile-nav-dropdown" id="profile-nav-dropdown" style="display: none; position: absolute; right: 0; top: calc(100% + 8px); min-width: 210px; background: #0f172a; border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 12px; box-shadow: 0 16px 36px rgba(0, 0, 0, 0.75); padding: 6px; z-index: 1000;">
+              <button type="button" class="dropdown-item" id="dropdown-view-profile" style="width: 100%; text-align: left; background: transparent; border: none; color: #f8fafc; padding: 10px 14px; border-radius: 8px; font-size: 0.88rem; font-weight: 500; cursor: pointer; display: flex; align-items: center; gap: 10px; transition: background 0.15s;">
+                <span>👤</span>
+                <span>View Your Profile</span>
+              </button>
+              <div style="height: 1px; background: rgba(255, 255, 255, 0.1); margin: 4px 6px;"></div>
+              <button type="button" class="dropdown-item" id="dropdown-sign-out" style="width: 100%; text-align: left; background: transparent; border: none; color: #fca5a5; padding: 10px 14px; border-radius: 8px; font-size: 0.88rem; font-weight: 500; cursor: pointer; display: flex; align-items: center; gap: 10px; transition: background 0.15s;">
+                <span>🚪</span>
+                <span>Sign Out</span>
+              </button>
             </div>
-            <div class="profile-info-mini">
-              <span class="user-name" id="user-display-name">Profile</span>
-              <span class="user-role-tag">Account</span>
-            </div>
-          </button>
+          </div>
         </div>
       </div>
     </div>
@@ -264,7 +282,7 @@
           <button class="filter-chip active" data-price-filter="all">All Lessons</button>
           <button class="filter-chip" data-price-filter="credits">Redeemable with Credits (₢)</button>
           <button class="filter-chip" data-price-filter="free">Free Community</button>
-          <button class="filter-chip" data-price-filter="paid">Paid Learner Fee ($)</button>
+          <button class="filter-chip" data-price-filter="paid">Paid Learner Fee (₹)</button>
         </div>
       </div>
 
@@ -626,10 +644,10 @@
 
           <div class="rates-inputs" id="rates-inputs-wrapper">
             <div class="form-group">
-              <label for="new-course-fee">Learner Cash Fee ($ USD)</label>
+              <label for="new-course-fee">Learner Cash Fee (₹ INR)</label>
               <div class="input-prefix-box">
-                <span class="prefix">$</span>
-                <input type="number" id="new-course-fee" min="0" max="500" value="35" step="5" />
+                <span class="prefix">₹</span>
+                <input type="number" id="new-course-fee" min="0" max="50000" value="499" step="50" />
               </div>
               <small>Charged to pure learners who don't teach on Crditeach.</small>
             </div>

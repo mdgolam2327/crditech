@@ -11,21 +11,86 @@ import { removeFloatingMiniPlayer } from './classroom.js';
 const PLAYLIST_STORAGE_KEY = 'crditeach_saved_playlist_ids';
 const HIDDEN_VIDEOS_KEY = 'crditeach_not_interested_ids';
 
-export function getSavedPlaylistIds() {
+// In-memory cache for user's saved items (bookmarks)
+let cachedSavedIds = new Set();
+let hasSyncedSavedIds = false;
+
+export async function syncSavedItemIds() {
+  if (!auth.isAuthenticated()) {
+    try {
+      const raw = JSON.parse(localStorage.getItem(PLAYLIST_STORAGE_KEY) || '[]');
+      cachedSavedIds = new Set(raw);
+    } catch {
+      cachedSavedIds = new Set();
+    }
+    return cachedSavedIds;
+  }
+
   try {
-    const raw = JSON.parse(localStorage.getItem(PLAYLIST_STORAGE_KEY) || '[]');
-    return Array.isArray(raw) ? raw : [];
-  } catch {
-    return [];
+    const res = await fetch('/api/user/saved-items/ids', { credentials: 'include' });
+    const data = await res.json();
+    if (res.ok && data.success && Array.isArray(data.savedIds)) {
+      cachedSavedIds = new Set(data.savedIds);
+      localStorage.setItem(PLAYLIST_STORAGE_KEY, JSON.stringify(data.savedIds));
+      hasSyncedSavedIds = true;
+    }
+  } catch (err) {
+    console.warn('Failed to sync saved item IDs from server:', err);
+  }
+  return cachedSavedIds;
+}
+
+export function isItemSaved(courseId) {
+  if (!hasSyncedSavedIds && auth.isAuthenticated()) {
+    syncSavedItemIds();
+  }
+  return cachedSavedIds.has(courseId);
+}
+
+export async function toggleSaveItem(courseId, onAfterChange = null) {
+  if (!auth.isAuthenticated()) {
+    window.showToast?.('Sign In Required', 'Please sign in to save items to your profile.', 'info');
+    document.getElementById('btn-header-login')?.click();
+    return false;
+  }
+
+  try {
+    const res = await fetch(`/api/user/saved-items/${encodeURIComponent(courseId)}`, {
+      method: 'POST',
+      credentials: 'include'
+    });
+    const data = await res.json();
+    if (res.ok && data.success) {
+      if (data.isSaved) {
+        cachedSavedIds.add(courseId);
+      } else {
+        cachedSavedIds.delete(courseId);
+      }
+      localStorage.setItem(PLAYLIST_STORAGE_KEY, JSON.stringify(Array.from(cachedSavedIds)));
+      window.showToast?.(
+        data.isSaved ? '🔖 Item Saved' : 'Removed from Saved Items',
+        data.message,
+        'success'
+      );
+      if (typeof onAfterChange === 'function') onAfterChange();
+      return data.isSaved;
+    } else {
+      window.showToast?.('Error', data.error || 'Could not update saved state.', 'error');
+      return false;
+    }
+  } catch (err) {
+    console.error('Toggle save error:', err);
+    window.showToast?.('Error', 'Network error while saving item.', 'error');
+    return false;
   }
 }
 
+export function getSavedPlaylistIds() {
+  return Array.from(cachedSavedIds);
+}
+
 export function toggleSaveToPlaylist(courseId) {
-  const list = getSavedPlaylistIds();
-  const exists = list.includes(courseId);
-  const updated = exists ? list.filter(id => id !== courseId) : [...list, courseId];
-  localStorage.setItem(PLAYLIST_STORAGE_KEY, JSON.stringify(updated));
-  return !exists;
+  return toggleSaveItem(courseId);
 }
 
 export function getNotInterestedIds() {
@@ -54,7 +119,7 @@ export function isVideoOwner(course) {
 export function renderVideoThreeDotMenu(course) {
   if (!course) return '';
   const owner = isVideoOwner(course);
-  const isSaved = getSavedPlaylistIds().includes(course.id);
+  const isSaved = isItemSaved(course.id);
 
   return `
     <div class="yt-video-menu-wrapper" style="position: relative; flex-shrink: 0; margin-left: auto;">
@@ -72,24 +137,30 @@ export function renderVideoThreeDotMenu(course) {
       <div 
         class="js-video-dots-dropdown" 
         data-dropdown-for="${course.id}"
-        style="display: none; position: absolute; right: 0; bottom: 32px; min-width: 195px; background: #0f172a; border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 12px; box-shadow: 0 14px 32px rgba(0, 0, 0, 0.72); padding: 6px; z-index: 999;"
+        style="display: none; position: absolute; right: 0; bottom: 32px; min-width: 205px; background: #0f172a; border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 12px; box-shadow: 0 14px 32px rgba(0, 0, 0, 0.72); padding: 6px; z-index: 999;"
       >
-        <!-- Save to Playlist -->
-        <button type="button" class="js-menu-save-playlist" data-course-id="${course.id}" style="${menuItemStyle('#f8fafc')}">
+        <!-- Save Item (Bookmark) -->
+        <button type="button" class="js-menu-save-item" data-course-id="${course.id}" style="${menuItemStyle('#f8fafc')}">
           <span>${isSaved ? '✅' : '🔖'}</span>
-          <span>${isSaved ? 'Saved in Playlist' : 'Save to Playlist'}</span>
+          <span>${isSaved ? 'Saved in Bookmarks' : 'Save to Bookmarks'}</span>
+        </button>
+
+        <!-- Add to Playlist -->
+        <button type="button" class="js-menu-add-playlist" data-course-id="${course.id}" style="${menuItemStyle('#f8fafc')}">
+          <span>📑</span>
+          <span>Add to Playlist</span>
+        </button>
+
+        <!-- Download -->
+        <button type="button" class="js-menu-download-video" data-course-id="${course.id}" style="${menuItemStyle('#f8fafc')}">
+          <span>⬇️</span>
+          <span>Download Video</span>
         </button>
 
         <!-- Share & Copy Link -->
         <button type="button" class="js-menu-share-video" data-course-id="${course.id}" style="${menuItemStyle('#f8fafc')}">
           <span>🔗</span>
           <span>Share & Copy Link</span>
-        </button>
-
-        <!-- Download -->
-        <button type="button" class="js-menu-download-video" data-course-id="${course.id}" style="${menuItemStyle('#f8fafc')}">
-          <span>⬇️</span>
-          <span>Download</span>
         </button>
 
         <!-- Interested -->
@@ -130,6 +201,203 @@ export function renderVideoThreeDotMenu(course) {
   `;
 }
 
+export async function downloadMedia(course) {
+  if (!course || !course.videoUrl) {
+    window.showToast?.('Unavailable', 'No downloadable media file found for this item.', 'error');
+    return;
+  }
+
+  try {
+    if (auth.isAuthenticated()) {
+      fetch('/api/user/downloads', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          itemId: course.id,
+          itemTitle: course.title,
+          fileUrl: course.videoUrl,
+          fileType: 'video'
+        })
+      }).catch(err => console.warn('Download recording error:', err));
+    }
+
+    const a = document.createElement('a');
+    a.href = course.videoUrl;
+    const cleanName = (course.title || 'crditeach-video').replace(/[^a-z0-9_-]/gi, '_');
+    a.download = `${cleanName}.mp4`;
+    a.target = '_blank';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.showToast?.('⬇️ Download Started', `Downloading "${course.title}" to device...`, 'success');
+  } catch (err) {
+    console.error('Download error:', err);
+    window.showToast?.('Download Error', 'Could not initiate file download.', 'error');
+  }
+}
+
+export async function openPlaylistModal(course) {
+  if (!auth.isAuthenticated()) {
+    window.showToast?.('Sign In Required', 'Please sign in to manage playlists.', 'info');
+    document.getElementById('btn-header-login')?.click();
+    return;
+  }
+
+  document.getElementById('playlist-picker-modal')?.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'playlist-picker-modal';
+  modal.style.cssText = 'position: fixed; inset: 0; background: rgba(0, 0, 0, 0.78); backdrop-filter: blur(8px); display: flex; align-items: center; justify-content: center; z-index: 10000; padding: 16px;';
+
+  modal.innerHTML = `
+    <div style="background: #0f172a; border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 16px; width: 100%; max-width: 420px; box-shadow: 0 20px 48px rgba(0,0,0,0.8); overflow: hidden;">
+      <div style="padding: 16px 20px; border-bottom: 1px solid rgba(255,255,255,0.08); display: flex; align-items: center; justify-content: space-between;">
+        <h3 style="margin: 0; font-size: 1.05rem; font-weight: 700; color: #f8fafc; display: flex; align-items: center; gap: 8px;">
+          <span>📑</span> Save to Playlist
+        </h3>
+        <button type="button" id="close-playlist-picker" style="background: transparent; border: none; color: #94a3b8; font-size: 1.3rem; cursor: pointer; padding: 4px;">&times;</button>
+      </div>
+
+      <div style="padding: 16px 20px;">
+        <div style="font-size: 0.82rem; color: #94a3b8; margin-bottom: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+          Video: <strong style="color: #f8fafc;">${escapeHtml(course.title)}</strong>
+        </div>
+
+        <div id="playlist-picker-list" style="max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px;">
+          <div style="text-align: center; padding: 18px; color: #94a3b8; font-size: 0.85rem;">⏳ Loading your playlists...</div>
+        </div>
+
+        <!-- Create New Playlist Form -->
+        <div style="border-top: 1px solid rgba(255,255,255,0.08); padding-top: 14px;">
+          <form id="form-create-new-playlist" style="display: flex; gap: 8px;">
+            <input 
+              type="text" 
+              id="new-playlist-title-input" 
+              placeholder="New playlist title..." 
+              required
+              style="flex: 1; padding: 8px 12px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); border-radius: 8px; color: #f8fafc; font-size: 0.84rem;"
+            />
+            <button type="submit" class="btn btn-primary" style="padding: 8px 14px; font-size: 0.82rem; font-weight: 600; white-space: nowrap;">
+              + Create
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(modal);
+
+  const closeModal = () => modal.remove();
+  document.getElementById('close-playlist-picker')?.addEventListener('click', closeModal);
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) closeModal();
+  });
+
+  async function loadPlaylists() {
+    const listMount = document.getElementById('playlist-picker-list');
+    if (!listMount) return;
+
+    try {
+      const res = await fetch('/api/user/playlists', { credentials: 'include' });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Failed to load playlists');
+
+      const playlists = data.playlists || [];
+      if (playlists.length === 0) {
+        listMount.innerHTML = `
+          <div style="text-align: center; padding: 14px; color: #94a3b8; font-size: 0.82rem;">
+            No playlists yet. Create your first playlist below!
+          </div>
+        `;
+        return;
+      }
+
+      listMount.innerHTML = playlists.map(pl => `
+        <label style="display: flex; align-items: center; justify-content: space-between; padding: 9px 12px; background: rgba(255,255,255,0.04); border-radius: 8px; cursor: pointer; transition: background 0.15s;">
+          <div style="display: flex; align-items: center; gap: 10px; min-width: 0;">
+            <span style="font-size: 1rem;">📁</span>
+            <div>
+              <div style="font-size: 0.88rem; font-weight: 600; color: #f8fafc;">${escapeHtml(pl.title)}</div>
+              <div style="font-size: 0.74rem; color: #94a3b8;">${pl.itemCount} items</div>
+            </div>
+          </div>
+          <button type="button" class="btn-toggle-playlist-item btn btn-secondary" data-playlist-id="${pl.id}" style="padding: 5px 10px; font-size: 0.76rem;">
+            + Add
+          </button>
+        </label>
+      `).join('');
+
+      listMount.querySelectorAll('.btn-toggle-playlist-item').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.preventDefault();
+          const plId = btn.getAttribute('data-playlist-id');
+          btn.disabled = true;
+          btn.textContent = '...';
+
+          try {
+            const addRes = await fetch(`/api/user/playlists/${encodeURIComponent(plId)}/items`, {
+              method: 'POST',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ courseId: course.id })
+            });
+            const addData = await addRes.json();
+            if (addRes.ok && addData.success) {
+              window.showToast?.('Added!', 'Video added to playlist successfully.', 'success');
+              btn.textContent = '✓ Added';
+              btn.style.borderColor = '#10b981';
+              btn.style.color = '#10b981';
+            } else {
+              window.showToast?.('Notice', addData.error || 'Already in playlist.', 'info');
+              btn.textContent = 'Already in';
+            }
+          } catch {
+            btn.disabled = false;
+            btn.textContent = '+ Add';
+          }
+        });
+      });
+    } catch (err) {
+      listMount.innerHTML = `<div style="text-align: center; color: #fca5a5; font-size: 0.82rem;">Could not load playlists.</div>`;
+    }
+  }
+
+  loadPlaylists();
+
+  document.getElementById('form-create-new-playlist')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = document.getElementById('new-playlist-title-input');
+    const title = input?.value.trim();
+    if (!title) return;
+
+    try {
+      const res = await fetch('/api/user/playlists', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title })
+      });
+      const data = await res.json();
+      if (res.ok && data.success && data.playlist) {
+        // Also immediately add this video to the newly created playlist
+        await fetch(`/api/user/playlists/${data.playlist.id}/items`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ courseId: course.id })
+        });
+        window.showToast?.('Playlist Created!', `Created "${title}" and added video.`, 'success');
+        input.value = '';
+        loadPlaylists();
+      }
+    } catch (err) {
+      window.showToast?.('Error', 'Failed to create playlist.', 'error');
+    }
+  });
+}
+
 function menuItemStyle(color) {
   return `width: 100%; text-align: left; background: transparent; border: none; color: ${color}; padding: 8px 10px; border-radius: 8px; font-size: 0.82rem; font-weight: 500; cursor: pointer; display: flex; align-items: center; gap: 9px;`;
 }
@@ -160,19 +428,37 @@ export function bindVideoThreeDotListeners(containerEl = document, onAfterChange
     drop.addEventListener('click', (e) => e.stopPropagation());
   });
 
-  // 1. Save to Playlist
-  containerEl.querySelectorAll('.js-menu-save-playlist').forEach(btn => {
+  // 1. Save / Bookmark Item
+  containerEl.querySelectorAll('.js-menu-save-item, .js-menu-save-playlist').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const courseId = btn.getAttribute('data-course-id');
+      closeAllDropdowns();
+      await toggleSaveItem(courseId, onAfterChange);
+    });
+  });
+
+  // 1b. Add to Playlist
+  containerEl.querySelectorAll('.js-menu-add-playlist').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const courseId = btn.getAttribute('data-course-id');
-      const nowSaved = toggleSaveToPlaylist(courseId);
+      const course = state.courses.find(c => c.id === courseId);
       closeAllDropdowns();
-      if (typeof onAfterChange === 'function') onAfterChange();
-      window.showToast?.(
-        nowSaved ? '🔖 Saved to Playlist' : 'Removed from Playlist',
-        nowSaved ? 'You can easily find this video in your Saved Playlist filter.' : 'Video removed from your saved playlist.',
-        'success'
-      );
+      if (course) openPlaylistModal(course);
+    });
+  });
+
+  // Quick Bookmark Button on Video Cards
+  containerEl.querySelectorAll('.js-quick-save-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const courseId = btn.getAttribute('data-course-id');
+      btn.disabled = true;
+      const isSaved = await toggleSaveItem(courseId, onAfterChange);
+      btn.disabled = false;
+      btn.innerHTML = isSaved ? '🔖' : '📑';
+      btn.title = isSaved ? 'Saved to bookmarks' : 'Save / Bookmark';
     });
   });
 
@@ -206,20 +492,7 @@ export function bindVideoThreeDotListeners(containerEl = document, onAfterChange
       const courseId = btn.getAttribute('data-course-id');
       const course = state.courses.find(c => c.id === courseId);
       closeAllDropdowns();
-
-      if (!course || !course.videoUrl) {
-        window.showToast?.('Unavailable', 'No downloadable video file found for this item.', 'error');
-        return;
-      }
-
-      const a = document.createElement('a');
-      a.href = course.videoUrl;
-      a.download = `${(course.title || 'video').replace(/[^a-z0-9_-]/gi, '_')}.mp4`;
-      a.target = '_blank';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.showToast?.('⬇️ Download Started', `Downloading "${course.title}"...`, 'info');
+      if (course) downloadMedia(course);
     });
   });
 

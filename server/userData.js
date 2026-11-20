@@ -4,6 +4,7 @@
  * are securely saved and associated exclusively with their unique User ID.
  */
 
+import bcrypt from 'bcryptjs';
 import { db } from './db.js';
 import { sendReportNotificationEmail } from './mailer.js';
 
@@ -883,5 +884,473 @@ export function handleCreateReport(req, res) {
   } catch (err) {
     console.error('Report submission error:', err);
     return res.status(500).json({ error: 'Failed to process report.' });
+  }
+}
+
+// =============================================================
+// SAVED ITEMS CONTROLLER (POST, GET, DELETE /api/user/saved-items)
+// =============================================================
+export function handleGetSavedItems(req, res) {
+  try {
+    const userId = req.user?.id || req.userId;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized: Please log in.' });
+
+    const rows = db.prepare(`
+      SELECT s.id as saved_record_id, s.item_id, s.created_at as saved_at,
+             c.*
+      FROM user_saved_items s
+      LEFT JOIN courses c ON s.item_id = c.id
+      WHERE s.user_id = ?
+      ORDER BY s.created_at DESC
+    `).all(userId);
+
+    const savedCourses = rows.map(r => {
+      let instructor = { name: 'Unknown Teacher' };
+      try { instructor = JSON.parse(r.instructor_json || '{}'); } catch {}
+      return {
+        savedId: r.saved_record_id,
+        savedAt: r.saved_at,
+        id: r.item_id,
+        title: r.title || 'Saved Item',
+        category: r.category || 'general',
+        categoryName: r.category_name || '',
+        desc: r.desc || '',
+        format: r.format || 'Standard',
+        duration: r.duration || '00:00',
+        thumbnail: r.thumbnail || '',
+        videoUrl: r.video_url || '',
+        views: r.views || 0,
+        supportCount: r.support_count || 0,
+        isLive: Boolean(r.is_live),
+        instructor
+      };
+    });
+
+    return res.json({ success: true, savedItems: savedCourses });
+  } catch (err) {
+    console.error('Get saved items error:', err);
+    return res.status(500).json({ error: 'Failed to retrieve saved items.' });
+  }
+}
+
+export function handleToggleSaveItem(req, res) {
+  try {
+    const userId = req.user?.id || req.userId;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized: Please log in.' });
+
+    const { itemId } = req.params;
+    if (!itemId) return res.status(400).json({ error: 'Item ID is required.' });
+
+    const existing = db.prepare('SELECT id FROM user_saved_items WHERE user_id = ? AND item_id = ?').get(userId, itemId);
+
+    let isSaved = false;
+    if (existing) {
+      db.prepare('DELETE FROM user_saved_items WHERE id = ?').run(existing.id);
+      isSaved = false;
+    } else {
+      const id = 'save_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+      const now = new Date().toISOString();
+      db.prepare('INSERT INTO user_saved_items (id, user_id, item_id, created_at) VALUES (?, ?, ?, ?)').run(id, userId, itemId, now);
+      isSaved = true;
+    }
+
+    return res.json({
+      success: true,
+      isSaved,
+      message: isSaved ? 'Item saved to your bookmarks!' : 'Item removed from saved items.'
+    });
+  } catch (err) {
+    console.error('Toggle save item error:', err);
+    return res.status(500).json({ error: 'Failed to update saved item.' });
+  }
+}
+
+export function handleGetSavedItemIds(req, res) {
+  try {
+    const userId = req.user?.id || req.userId;
+    if (!userId) return res.json({ success: true, savedIds: [] });
+
+    const rows = db.prepare('SELECT item_id FROM user_saved_items WHERE user_id = ?').all(userId);
+    return res.json({ success: true, savedIds: rows.map(r => r.item_id) });
+  } catch (err) {
+    return res.json({ success: true, savedIds: [] });
+  }
+}
+
+// =============================================================
+// DOWNLOADS CONTROLLER (POST, GET /api/user/downloads)
+// =============================================================
+export function handleGetDownloads(req, res) {
+  try {
+    const userId = req.user?.id || req.userId;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized: Please log in.' });
+
+    const rows = db.prepare(`
+      SELECT * FROM user_downloads
+      WHERE user_id = ?
+      ORDER BY downloaded_at DESC
+    `).all(userId);
+
+    return res.json({
+      success: true,
+      downloads: rows.map(r => ({
+        id: r.id,
+        itemId: r.item_id,
+        title: r.item_title,
+        fileUrl: r.file_url,
+        fileType: r.file_type || 'video',
+        downloadedAt: r.downloaded_at
+      }))
+    });
+  } catch (err) {
+    console.error('Get downloads error:', err);
+    return res.status(500).json({ error: 'Failed to retrieve download history.' });
+  }
+}
+
+export function handleRecordDownload(req, res) {
+  try {
+    const userId = req.user?.id || req.userId;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized: Please log in.' });
+
+    const { itemId, itemTitle, fileUrl, fileType } = req.body || {};
+    if (!fileUrl) return res.status(400).json({ error: 'File URL is required.' });
+
+    const id = 'dl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO user_downloads (id, user_id, item_id, item_title, file_url, file_type, downloaded_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(id, userId, itemId || 'item', itemTitle || 'Downloaded Media', fileUrl, fileType || 'video', now);
+
+    return res.status(201).json({
+      success: true,
+      download: { id, itemId, itemTitle, fileUrl, fileType, downloadedAt: now }
+    });
+  } catch (err) {
+    console.error('Record download error:', err);
+    return res.status(500).json({ error: 'Failed to record download.' });
+  }
+}
+
+// =============================================================
+// PLAYLISTS CONTROLLER (CRUD /api/user/playlists)
+// =============================================================
+export function handleGetUserPlaylists(req, res) {
+  try {
+    const userId = req.user?.id || req.userId;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized: Please log in.' });
+
+    const playlists = db.prepare(`
+      SELECT p.*,
+             COUNT(pi.course_id) as item_count,
+             (SELECT c.thumbnail FROM playlist_items pi2
+              LEFT JOIN courses c ON pi2.course_id = c.id
+              WHERE pi2.playlist_id = p.id AND c.thumbnail IS NOT NULL AND c.thumbnail != ''
+              LIMIT 1) as auto_thumbnail
+      FROM user_playlists p
+      LEFT JOIN playlist_items pi ON p.id = pi.playlist_id
+      WHERE p.user_id = ?
+      GROUP BY p.id
+      ORDER BY p.updated_at DESC
+    `).all(userId);
+
+    return res.json({
+      success: true,
+      playlists: playlists.map(p => ({
+        id: p.id,
+        title: p.title,
+        description: p.description || '',
+        thumbnail: p.thumbnail || p.auto_thumbnail || '',
+        itemCount: p.item_count || 0,
+        createdAt: p.created_at,
+        updatedAt: p.updated_at
+      }))
+    });
+  } catch (err) {
+    console.error('Get playlists error:', err);
+    return res.status(500).json({ error: 'Failed to fetch playlists.' });
+  }
+}
+
+export function handleCreatePlaylist(req, res) {
+  try {
+    const userId = req.user?.id || req.userId;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized: Please log in.' });
+
+    const { title, description } = req.body || {};
+    const cleanTitle = (title || '').trim();
+    if (!cleanTitle) return res.status(400).json({ error: 'Playlist title cannot be empty.' });
+
+    const id = 'pl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO user_playlists (id, user_id, title, description, thumbnail, created_at, updated_at)
+      VALUES (?, ?, ?, ?, '', ?, ?)
+    `).run(id, userId, cleanTitle, (description || '').trim(), now, now);
+
+    return res.status(201).json({
+      success: true,
+      playlist: { id, title: cleanTitle, description: (description || '').trim(), itemCount: 0, createdAt: now, updatedAt: now }
+    });
+  } catch (err) {
+    console.error('Create playlist error:', err);
+    return res.status(500).json({ error: 'Failed to create playlist.' });
+  }
+}
+
+export function handleUpdatePlaylist(req, res) {
+  try {
+    const userId = req.user?.id || req.userId;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized: Please log in.' });
+
+    const { id } = req.params;
+    const { title, description } = req.body || {};
+    const cleanTitle = (title || '').trim();
+    if (!cleanTitle) return res.status(400).json({ error: 'Playlist title cannot be empty.' });
+
+    const existing = db.prepare('SELECT id FROM user_playlists WHERE id = ? AND user_id = ?').get(id, userId);
+    if (!existing) return res.status(404).json({ error: 'Playlist not found.' });
+
+    const now = new Date().toISOString();
+    db.prepare(`
+      UPDATE user_playlists
+      SET title = ?, description = ?, updated_at = ?
+      WHERE id = ? AND user_id = ?
+    `).run(cleanTitle, (description || '').trim(), now, id, userId);
+
+    return res.json({ success: true, message: 'Playlist updated successfully!' });
+  } catch (err) {
+    console.error('Update playlist error:', err);
+    return res.status(500).json({ error: 'Failed to update playlist.' });
+  }
+}
+
+export function handleDeletePlaylist(req, res) {
+  try {
+    const userId = req.user?.id || req.userId;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized: Please log in.' });
+
+    const { id } = req.params;
+    const existing = db.prepare('SELECT id FROM user_playlists WHERE id = ? AND user_id = ?').get(id, userId);
+    if (!existing) return res.status(404).json({ error: 'Playlist not found.' });
+
+    db.prepare('DELETE FROM playlist_items WHERE playlist_id = ?').run(id);
+    db.prepare('DELETE FROM user_playlists WHERE id = ? AND user_id = ?').run(id, userId);
+
+    return res.json({ success: true, message: 'Playlist deleted.' });
+  } catch (err) {
+    console.error('Delete playlist error:', err);
+    return res.status(500).json({ error: 'Failed to delete playlist.' });
+  }
+}
+
+export function handleGetPlaylistDetails(req, res) {
+  try {
+    const userId = req.user?.id || req.userId;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized: Please log in.' });
+
+    const { id } = req.params;
+    const playlist = db.prepare('SELECT * FROM user_playlists WHERE id = ? AND user_id = ?').get(id, userId);
+    if (!playlist) return res.status(404).json({ error: 'Playlist not found.' });
+
+    const items = db.prepare(`
+      SELECT pi.id as item_row_id, pi.added_at, c.*
+      FROM playlist_items pi
+      JOIN courses c ON pi.course_id = c.id
+      WHERE pi.playlist_id = ?
+      ORDER BY pi.added_at DESC
+    `).all(id);
+
+    const mappedCourses = items.map(c => {
+      let instructor = { name: 'Unknown Teacher' };
+      try { instructor = JSON.parse(c.instructor_json || '{}'); } catch {}
+      return {
+        playlistItemId: c.item_row_id,
+        addedAt: c.added_at,
+        id: c.id,
+        title: c.title,
+        category: c.category,
+        categoryName: c.category_name,
+        desc: c.desc,
+        format: c.format,
+        duration: c.duration,
+        thumbnail: c.thumbnail,
+        videoUrl: c.video_url,
+        views: c.views || 0,
+        supportCount: c.support_count || 0,
+        isLive: Boolean(c.is_live),
+        instructor
+      };
+    });
+
+    return res.json({
+      success: true,
+      playlist: {
+        id: playlist.id,
+        title: playlist.title,
+        description: playlist.description,
+        createdAt: playlist.created_at,
+        updatedAt: playlist.updated_at,
+        items: mappedCourses
+      }
+    });
+  } catch (err) {
+    console.error('Get playlist details error:', err);
+    return res.status(500).json({ error: 'Failed to load playlist details.' });
+  }
+}
+
+export function handleAddPlaylistItem(req, res) {
+  try {
+    const userId = req.user?.id || req.userId;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized: Please log in.' });
+
+    const { id } = req.params; // playlist id
+    const { courseId } = req.body || {};
+    if (!courseId) return res.status(400).json({ error: 'Course ID is required.' });
+
+    const playlist = db.prepare('SELECT id FROM user_playlists WHERE id = ? AND user_id = ?').get(id, userId);
+    if (!playlist) return res.status(404).json({ error: 'Playlist not found.' });
+
+    const course = db.prepare('SELECT id FROM courses WHERE id = ?').get(courseId);
+    if (!course) return res.status(404).json({ error: 'Video not found.' });
+
+    const existing = db.prepare('SELECT id FROM playlist_items WHERE playlist_id = ? AND course_id = ?').get(id, courseId);
+    if (existing) {
+      return res.status(400).json({ error: 'This video is already in this playlist.' });
+    }
+
+    const rowId = 'pli_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+    const now = new Date().toISOString();
+
+    db.prepare('INSERT INTO playlist_items (id, playlist_id, course_id, added_at) VALUES (?, ?, ?, ?)').run(rowId, id, courseId, now);
+    db.prepare('UPDATE user_playlists SET updated_at = ? WHERE id = ?').run(now, id);
+
+    return res.status(201).json({ success: true, message: 'Added to playlist!' });
+  } catch (err) {
+    console.error('Add playlist item error:', err);
+    return res.status(500).json({ error: 'Failed to add item to playlist.' });
+  }
+}
+
+export function handleRemovePlaylistItem(req, res) {
+  try {
+    const userId = req.user?.id || req.userId;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized: Please log in.' });
+
+    const { id, courseId } = req.params;
+    const playlist = db.prepare('SELECT id FROM user_playlists WHERE id = ? AND user_id = ?').get(id, userId);
+    if (!playlist) return res.status(404).json({ error: 'Playlist not found.' });
+
+    db.prepare('DELETE FROM playlist_items WHERE playlist_id = ? AND course_id = ?').run(id, courseId);
+    const now = new Date().toISOString();
+    db.prepare('UPDATE user_playlists SET updated_at = ? WHERE id = ?').run(now, id);
+
+    return res.json({ success: true, message: 'Removed from playlist.' });
+  } catch (err) {
+    console.error('Remove playlist item error:', err);
+    return res.status(500).json({ error: 'Failed to remove item from playlist.' });
+  }
+}
+
+// =============================================================
+// USER PREFERENCES & SETTINGS (GET, PUT /api/user/preferences)
+// =============================================================
+export function handleGetUserPreferences(req, res) {
+  try {
+    const userId = req.user?.id || req.userId;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized: Please log in.' });
+
+    let prefs = db.prepare('SELECT * FROM user_preferences WHERE user_id = ?').get(userId);
+    if (!prefs) {
+      const now = new Date().toISOString();
+      db.prepare(`
+        INSERT INTO user_preferences (user_id, theme, email_notifications, course_alerts, activity_privacy, updated_at)
+        VALUES (?, 'dark', 1, 1, 0, ?)
+      `).run(userId, now);
+      prefs = { user_id: userId, theme: 'dark', email_notifications: 1, course_alerts: 1, activity_privacy: 0, updated_at: now };
+    }
+
+    return res.json({
+      success: true,
+      preferences: {
+        theme: prefs.theme || 'dark',
+        emailNotifications: Boolean(prefs.email_notifications),
+        courseAlerts: Boolean(prefs.course_alerts),
+        activityPrivacy: Boolean(prefs.activity_privacy)
+      }
+    });
+  } catch (err) {
+    console.error('Get preferences error:', err);
+    return res.status(500).json({ error: 'Failed to retrieve preferences.' });
+  }
+}
+
+export function handleUpdateUserPreferences(req, res) {
+  try {
+    const userId = req.user?.id || req.userId;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized: Please log in.' });
+
+    const { theme, emailNotifications, courseAlerts, activityPrivacy } = req.body || {};
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO user_preferences (user_id, theme, email_notifications, course_alerts, activity_privacy, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET
+        theme = excluded.theme,
+        email_notifications = excluded.email_notifications,
+        course_alerts = excluded.course_alerts,
+        activity_privacy = excluded.activity_privacy,
+        updated_at = excluded.updated_at
+    `).run(
+      userId,
+      theme || 'dark',
+      emailNotifications ? 1 : 0,
+      courseAlerts ? 1 : 0,
+      activityPrivacy ? 1 : 0,
+      now
+    );
+
+    return res.json({ success: true, message: 'Settings saved successfully!' });
+  } catch (err) {
+    console.error('Update preferences error:', err);
+    return res.status(500).json({ error: 'Failed to update preferences.' });
+  }
+}
+
+export async function handleChangePassword(req, res) {
+  try {
+    const userId = req.user?.id || req.userId;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized: Please log in.' });
+
+    const { currentPassword, newPassword } = req.body || {};
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'Current password and new password are required.' });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'New password must be at least 6 characters.' });
+    }
+
+    const user = db.prepare('SELECT id, password_hash FROM users WHERE id = ?').get(userId);
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+
+    const isMatch = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!isMatch) {
+      return res.status(400).json({ error: 'Current password is incorrect.' });
+    }
+
+    const newHash = await bcrypt.hash(newPassword, 10);
+    const now = new Date().toISOString();
+    db.prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?').run(newHash, now, userId);
+
+    return res.json({ success: true, message: 'Password changed successfully!' });
+  } catch (err) {
+    console.error('Change password error:', err);
+    return res.status(500).json({ error: 'Failed to change password.' });
   }
 }

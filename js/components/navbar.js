@@ -4,7 +4,7 @@
 - and responsive Sign In / Register / Profile triggers.
  */
 
-import { state } from '../state.js';
+import { state, formatINR } from '../state.js';
 import { auth } from '../auth.js';
 import { openOwnProfile } from './profileView.js';
 import { openAuthModal } from './authModal.js';
@@ -25,10 +25,59 @@ export function initNavbar(onNavigate) {
   const authUserControls = document.getElementById('auth-user-controls');
   const userDisplayName = document.getElementById('user-display-name');
 
+  // Profile Dropdown Elements (Requirement 2)
+  const profileDropdown = document.getElementById('profile-nav-dropdown');
+  const dropdownViewProfile = document.getElementById('dropdown-view-profile');
+  const dropdownSignOut = document.getElementById('dropdown-sign-out');
+
   // Auth Button Handlers
   btnHeaderLogin?.addEventListener('click', () => openAuthModal('login'));
   btnHeaderRegister?.addEventListener('click', () => openAuthModal('register'));
-  btnOpenProfile?.addEventListener('click', () => openOwnProfile());
+
+  // Toggle Profile Dropdown on Click (Desktop & Mobile)
+  btnOpenProfile?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!profileDropdown) return;
+    const isShowing = profileDropdown.style.display === 'block';
+    profileDropdown.style.display = isShowing ? 'none' : 'block';
+    btnOpenProfile.setAttribute('aria-expanded', String(!isShowing));
+  });
+
+  // Dropdown Option 1: View Your Profile
+  dropdownViewProfile?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (profileDropdown) profileDropdown.style.display = 'none';
+    btnOpenProfile?.setAttribute('aria-expanded', 'false');
+    openOwnProfile();
+  });
+
+  // Dropdown Option 2: Sign Out
+  dropdownSignOut?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (profileDropdown) profileDropdown.style.display = 'none';
+    btnOpenProfile?.setAttribute('aria-expanded', 'false');
+    try {
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+    } catch {}
+    localStorage.removeItem('crditeach_token');
+    localStorage.removeItem('crditeach_user');
+    if (auth && typeof auth.logout === 'function') {
+      await auth.logout();
+    }
+    window.showToast?.('Signed Out', 'You have been securely signed out.', 'info');
+    onNavigate('marketplace');
+    window.location.reload();
+  });
+
+  // Close dropdown when clicking outside
+  document.addEventListener('click', (e) => {
+    if (profileDropdown && profileDropdown.style.display === 'block') {
+      if (!e.target.closest('.profile-dropdown-wrapper')) {
+        profileDropdown.style.display = 'none';
+        btnOpenProfile?.setAttribute('aria-expanded', 'false');
+      }
+    }
+  });
 
   // Navigation tab clicks
   navButtons.forEach(btn => {
@@ -51,7 +100,7 @@ export function initNavbar(onNavigate) {
   // Update UI when state or auth changes
   function updateNavUI(appState) {
     if (userCreditsEl) userCreditsEl.textContent = appState.user.credits;
-    if (userCashEl) userCashEl.textContent = appState.user.cash.toFixed(2);
+    if (userCashEl) userCashEl.textContent = Math.round(appState.user.cash).toLocaleString('en-IN');
     if (enrolledBadge) enrolledBadge.textContent = appState.enrolledCourseIds.length;
 
     // Toggle between Guest Controls (Sign In / Register) and Profile Trigger
@@ -125,7 +174,7 @@ function openWalletModal() {
   const ledgerList = document.getElementById('ledger-entries');
 
   if (creditsEl) creditsEl.textContent = state.user.credits;
-  if (cashEl) cashEl.textContent = state.user.cash.toFixed(2);
+  if (cashEl) cashEl.textContent = formatINR(state.user.cash);
   if (teachingSubEl) {
     teachingSubEl.textContent = `Earned by teaching ${state.user.studentsTaught} student${state.user.studentsTaught === 1 ? '' : 's'}`;
   }

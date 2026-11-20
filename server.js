@@ -44,7 +44,22 @@ import {
   handleDeleteCourse,
   handleCreateReport,
   handleToggleFollow,
-  handleGetFollowStatus
+  handleGetFollowStatus,
+  handleGetSavedItems,
+  handleToggleSaveItem,
+  handleGetSavedItemIds,
+  handleGetDownloads,
+  handleRecordDownload,
+  handleGetUserPlaylists,
+  handleCreatePlaylist,
+  handleUpdatePlaylist,
+  handleDeletePlaylist,
+  handleGetPlaylistDetails,
+  handleAddPlaylistItem,
+  handleRemovePlaylistItem,
+  handleGetUserPreferences,
+  handleUpdateUserPreferences,
+  handleChangePassword
 } from './server/userData.js';
 
 dotenv.config();
@@ -268,6 +283,29 @@ app.post('/api/reports', reportRateLimiter, handleCreateReport);
 // Following System (Follow / Unfollow / Status)
 app.post('/api/users/:userId/follow', requireAuth, handleToggleFollow);
 app.get('/api/users/:userId/follow-status', handleGetFollowStatus);
+
+// Saved Items (Bookmarks)
+app.get('/api/user/saved-items', requireAuth, handleGetSavedItems);
+app.get('/api/user/saved-items/ids', handleGetSavedItemIds);
+app.post('/api/user/saved-items/:itemId', requireAuth, handleToggleSaveItem);
+
+// Downloads History
+app.get('/api/user/downloads', requireAuth, handleGetDownloads);
+app.post('/api/user/downloads', requireAuth, handleRecordDownload);
+
+// Playlist Management
+app.get('/api/user/playlists', requireAuth, handleGetUserPlaylists);
+app.post('/api/user/playlists', requireAuth, handleCreatePlaylist);
+app.put('/api/user/playlists/:id', requireAuth, handleUpdatePlaylist);
+app.delete('/api/user/playlists/:id', requireAuth, handleDeletePlaylist);
+app.get('/api/user/playlists/:id', requireAuth, handleGetPlaylistDetails);
+app.post('/api/user/playlists/:id/items', requireAuth, handleAddPlaylistItem);
+app.delete('/api/user/playlists/:id/items/:courseId', requireAuth, handleRemovePlaylistItem);
+
+// Settings, Preferences & Security
+app.get('/api/user/preferences', requireAuth, handleGetUserPreferences);
+app.put('/api/user/preferences', requireAuth, handleUpdateUserPreferences);
+app.put('/api/user/security/password', requireAuth, handleChangePassword);
 
 // 5. Serve Static Frontend Files
 app.use(express.static(path.resolve(__dirname, './')));

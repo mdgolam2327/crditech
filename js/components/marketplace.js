@@ -5,14 +5,15 @@
 - Includes universal 3-dot video menu (Playlist, Share/Copy Link, Download, Interest, Report, and Owner-only Edit/Delete)
  */
 
-import { state } from '../state.js';
+import { state, formatINR } from '../state.js';
 import { auth } from '../auth.js';
 import { openCreatorChannel } from './profileView.js';
 import {
   renderVideoThreeDotMenu,
   bindVideoThreeDotListeners,
   getSavedPlaylistIds,
-  getNotInterestedIds
+  getNotInterestedIds,
+  isItemSaved
 } from './videoActions.js';
 
 let navigateCallback = null;
@@ -189,7 +190,7 @@ export function initMarketplace(onNavigate) {
             <div class="yt-thumb-wrapper">
               <img src="${course.thumbnail}" alt="${course.title}" />
               <span class="yt-price-pill">
-                ${isFree || isEnrolled ? 'FREE • AD-FREE' : `₢ ${course.creditPrice}`}
+                ${isFree || isEnrolled ? 'FREE • AD-FREE' : (course.cashFee ? formatINR(course.cashFee) : `₢ ${course.creditPrice}`)}
               </span>
               <span class="yt-duration-badge">${course.duration || 'Video'}</span>
             </div>
@@ -230,6 +231,17 @@ export function initMarketplace(onNavigate) {
                   </span>
                 </div>
               </div>
+
+              <!-- Quick Save / Bookmark Button -->
+              <button 
+                type="button" 
+                class="js-quick-save-btn" 
+                data-course-id="${course.id}"
+                title="${isItemSaved(course.id) ? 'Saved to bookmarks' : 'Save / Bookmark'}"
+                style="background: ${isItemSaved(course.id) ? 'rgba(56, 189, 248, 0.2)' : 'transparent'}; border: none; color: ${isItemSaved(course.id) ? '#38bdf8' : '#94a3b8'}; width: 28px; height: 28px; border-radius: 50%; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; font-size: 0.95rem; margin-top: 2px; transition: all 0.15s;"
+              >
+                ${isItemSaved(course.id) ? '🔖' : '📑'}
+              </button>
 
               <!-- 3-Dot Action Menu (Playlist, Share/Copy Link, Download, Interest, Report + Owner Edit/Delete) -->
               ${renderVideoThreeDotMenu(course)}

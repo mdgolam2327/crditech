@@ -3,7 +3,7 @@
  * Teacher analytics, credit accumulation, course creation, and live teaching simulation
  */
 
-import { state } from '../state.js';
+import { state, formatINR } from '../state.js';
 
 let navigateCallback = null;
 
@@ -76,10 +76,10 @@ export function initTeacherStudio(onNavigate) {
           <!-- Stat 3: Learner Cash Revenue -->
           <div class="studio-stat-card">
             <div class="stat-card-top">
-              <span class="s-label">Learner Fee Earnings</span>
-              <div class="stat-icon blue-icon">$</div>
+              <span class="s-label">Learner Fee Earnings (INR)</span>
+              <div class="stat-icon blue-icon">₹</div>
             </div>
-            <div class="s-value" id="studio-stat-cash">$${user.totalCashEarned.toFixed(2)}</div>
+            <div class="s-value" id="studio-stat-cash">${formatINR(user.totalCashEarned)}</div>
             <div class="s-change up">From pure non-teaching learners</div>
           </div>
 
@@ -181,7 +181,7 @@ export function initTeacherStudio(onNavigate) {
                       <td style="font-weight: 600; color: var(--text-pure);">${course.title}</td>
                       <td><span class="cat-pill" style="padding: 4px 10px; font-size: 0.72rem;">${course.categoryName}</span></td>
                       <td style="text-transform: capitalize;">${course.pricingModel}</td>
-                      <td>${course.cashFee ? '$' + course.cashFee.toFixed(2) : 'Free / N/A'}</td>
+                      <td>${course.cashFee ? formatINR(course.cashFee) : 'Free / N/A'}</td>
                       <td style="color: var(--credit-green-light); font-weight: 700;">₢ ${course.creditPrice}</td>
                       <td><strong>${course.instructor.studentsTaught}</strong> students</td>
                       <td><span style="color: var(--credit-green-light); font-size: 0.78rem; font-weight: 700;">● Active</span></td>

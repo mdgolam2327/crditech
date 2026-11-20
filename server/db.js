@@ -125,6 +125,51 @@ export function initDatabase() {
       PRIMARY KEY (follower_id, following_id)
     );
 
+    CREATE TABLE IF NOT EXISTS user_saved_items (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      item_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(user_id, item_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS user_downloads (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      item_id TEXT NOT NULL,
+      item_title TEXT NOT NULL,
+      file_url TEXT NOT NULL,
+      file_type TEXT DEFAULT 'video',
+      downloaded_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS user_playlists (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      thumbnail TEXT DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS playlist_items (
+      id TEXT PRIMARY KEY,
+      playlist_id TEXT NOT NULL,
+      course_id TEXT NOT NULL,
+      added_at TEXT NOT NULL,
+      UNIQUE(playlist_id, course_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS user_preferences (
+      user_id TEXT PRIMARY KEY,
+      theme TEXT DEFAULT 'dark',
+      email_notifications INTEGER DEFAULT 1,
+      course_alerts INTEGER DEFAULT 1,
+      activity_privacy INTEGER DEFAULT 0,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
     CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone);
     CREATE INDEX IF NOT EXISTS idx_sessions_user ON user_sessions(user_id);
@@ -134,6 +179,10 @@ export function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_reports_target ON reports(target_type, target_id);
     CREATE INDEX IF NOT EXISTS idx_follows_following ON user_follows(following_id);
     CREATE INDEX IF NOT EXISTS idx_follows_follower ON user_follows(follower_id);
+    CREATE INDEX IF NOT EXISTS idx_saved_user ON user_saved_items(user_id);
+    CREATE INDEX IF NOT EXISTS idx_downloads_user ON user_downloads(user_id);
+    CREATE INDEX IF NOT EXISTS idx_playlists_user ON user_playlists(user_id);
+    CREATE INDEX IF NOT EXISTS idx_playlist_items_pl ON playlist_items(playlist_id);
   `);
 
   const userColumns = [
