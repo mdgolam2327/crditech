@@ -225,7 +225,7 @@ export function initTeacherStudio(onNavigate) {
         // Celebratory Toast Notification
         window.showToast(
           '🎉 Student Taught!',
-          `You taught ${result.studentName} "${randomSkill}". You earned +${result.earnedCredits} Credits & +$${result.earnedCash.toFixed(2)} USD!`,
+          `You taught ${result.studentName} "${randomSkill}". You earned +${result.earnedCredits} Credits & +${formatINR(result.earnedCash)}!`,
           'success'
         );
 

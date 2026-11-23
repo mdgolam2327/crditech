@@ -59,7 +59,10 @@ import {
   handleRemovePlaylistItem,
   handleGetUserPreferences,
   handleUpdateUserPreferences,
-  handleChangePassword
+  handleChangePassword,
+  handleEnrollCourse,
+  handleTeachSession,
+  handleClaimSponsor
 } from './server/userData.js';
 
 dotenv.config();
@@ -152,27 +155,46 @@ if (!fs.existsSync(uploadDir)) {
 // Serve uploaded videos publicly so the video player can stream them
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// Configure Multer storage for video files
-const storage = multer.diskStorage({
+// Configure Multer storage for video files with strict MIME & extension verification
+const ALLOWED_VIDEO_EXTS = new Set(['.mp4', '.webm', '.ogg', '.mov', '.mkv']);
+const ALLOWED_VIDEO_MIMES = new Set([
+  'video/mp4', 'video/webm', 'video/ogg', 'video/quicktime', 'video/x-matroska'
+]);
+
+const videoStorage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
+    const rawExt = path.extname(file.originalname).toLowerCase();
+    const safeExt = ALLOWED_VIDEO_EXTS.has(rawExt) ? rawExt : '.mp4';
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const ext = path.extname(file.originalname);
-    cb(null, `video-${uniqueSuffix}${ext}`);
+    cb(null, `video-${uniqueSuffix}${safeExt}`);
   }
 });
 
 const uploadVideoMiddleware = multer({
-  storage,
-  limits: { fileSize: 500 * 1024 * 1024 } // Max 500MB video size
+  storage: videoStorage,
+  limits: { fileSize: 500 * 1024 * 1024 }, // Max 500MB video size
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (ALLOWED_VIDEO_MIMES.has(file.mimetype) || ALLOWED_VIDEO_EXTS.has(ext)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid video format. Supported formats: MP4, WebM, OGG, MOV, MKV.'));
+    }
+  }
 });
 
 // API Endpoint to upload physical video file (Requires Authentication)
 app.post('/api/upload-video', requireAuth, uploadVideoMiddleware.single('videoFile'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No video file uploaded.' });
+  }
+  // Prevent Path Traversal
+  const resolvedPath = path.resolve(req.file.path);
+  if (!resolvedPath.startsWith(uploadDir)) {
+    return res.status(403).json({ error: 'Invalid file upload destination.' });
   }
   const publicVideoUrl = `/uploads/${req.file.filename}`;
   return res.json({ success: true, videoUrl: publicVideoUrl });
@@ -181,20 +203,25 @@ app.post('/api/upload-video', requireAuth, uploadVideoMiddleware.single('videoFi
 // -------------------------------------------------------------
 // CUSTOM THUMBNAIL IMAGE UPLOAD (POST /api/upload-thumbnail)
 // -------------------------------------------------------------
+const ALLOWED_IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif']);
+const ALLOWED_IMAGE_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+
 const imageUpload = multer({
   storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, 'uploads/'),
+    destination: (req, file, cb) => cb(null, uploadDir),
     filename: (req, file, cb) => {
-      const ext = path.extname(file.originalname) || '.jpg';
-      cb(null, `thumb-${Date.now()}-${Math.round(Math.random() * 1e6)}${ext}`);
+      const rawExt = path.extname(file.originalname).toLowerCase();
+      const safeExt = ALLOWED_IMAGE_EXTS.has(rawExt) ? rawExt : '.jpg';
+      cb(null, `thumb-${Date.now()}-${Math.round(Math.random() * 1e6)}${safeExt}`);
     }
   }),
   limits: { fileSize: 10 * 1024 * 1024 }, // Max 10MB image
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (ALLOWED_IMAGE_MIMES.has(file.mimetype) || ALLOWED_IMAGE_EXTS.has(ext)) {
       cb(null, true);
     } else {
-      cb(new Error('Only image files (JPG, PNG, WebP) are allowed!'));
+      cb(new Error('Only image files (JPG, PNG, WebP, GIF) are allowed!'));
     }
   }
 });
@@ -203,6 +230,11 @@ app.post('/api/upload-thumbnail', requireAuth, imageUpload.single('thumbnailFile
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No thumbnail image uploaded.' });
+    }
+    // Prevent Path Traversal
+    const resolvedPath = path.resolve(req.file.path);
+    if (!resolvedPath.startsWith(uploadDir)) {
+      return res.status(403).json({ error: 'Invalid file upload destination.' });
     }
     const thumbnailUrl = `/uploads/${req.file.filename}`;
     return res.json({ success: true, thumbnailUrl });
@@ -269,6 +301,9 @@ app.get('/api/user/data', requireAuth, handleGetUserData);
 app.post('/api/user/data', requireAuth, handleSaveUserData);
 app.post('/api/courses', requireAuth, handlePublishCourse);
 app.get('/api/courses', handleGetAllCourses);
+app.post('/api/courses/:id/enroll', requireAuth, handleEnrollCourse);
+app.post('/api/user/teach', requireAuth, handleTeachSession);
+app.post('/api/user/sponsor-claim', requireAuth, handleClaimSponsor);
 app.post('/api/courses/:id/engage', handleCourseEngage);
 app.post('/api/courses/:id/end-live', requireAuth, handleEndLiveStream);
 app.get('/api/courses/:id/comments', handleGetCourseComments);

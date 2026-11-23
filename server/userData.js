@@ -7,6 +7,7 @@
 import bcrypt from 'bcryptjs';
 import { db } from './db.js';
 import { sendReportNotificationEmail } from './mailer.js';
+import { executeAtomicEnrollment, executeAtomicCreditEarning, isSupabaseConfigured, supabaseAdmin } from './supabase.js';
 
 // -------------------------------------------------------------
 // GET USER'S PERSISTED DATA (GET /api/user/data)
@@ -96,14 +97,18 @@ export function handleSaveUserData(req, res) {
     const userId = req.user.id; // STRICT: Always use session user ID, never client body
     const payload = req.body || {};
 
+    const existingRow = db.prepare('SELECT credits, cash, total_credits_earned, total_cash_earned, students_taught FROM user_data WHERE user_id = ?').get(userId);
+
     const role = payload.role === 'learner' ? 'learner' : 'teacher';
-    const credits = Math.max(0, parseInt(payload.credits) || 0);
-    const cash = Math.max(0, parseFloat(payload.cash) || 0.0);
+    // STRICT SECURITY: Never trust client-supplied credit balances directly.
+    // If user already exists in DB, maintain authoritative server balance.
+    const credits = existingRow ? existingRow.credits : Math.max(0, parseInt(payload.credits) || 0);
+    const cash = existingRow ? existingRow.cash : Math.max(0, parseFloat(payload.cash) || 0.0);
     const tier = (payload.tier || 'Apprentice Teacher').trim();
     const tierProgress = Math.min(100, Math.max(0, parseInt(payload.tierProgress) || 0));
-    const studentsTaught = Math.max(0, parseInt(payload.studentsTaught) || 0);
-    const totalCreditsEarned = Math.max(0, parseInt(payload.totalCreditsEarned) || 0);
-    const totalCashEarned = Math.max(0, parseFloat(payload.totalCashEarned) || 0.0);
+    const studentsTaught = existingRow ? existingRow.students_taught : Math.max(0, parseInt(payload.studentsTaught) || 0);
+    const totalCreditsEarned = existingRow ? existingRow.total_credits_earned : Math.max(0, parseInt(payload.totalCreditsEarned) || 0);
+    const totalCashEarned = existingRow ? existingRow.total_cash_earned : Math.max(0, parseFloat(payload.totalCashEarned) || 0.0);
     const avatar = payload.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=120&auto=format&fit=crop&q=80';
     const enrolledCourseIds = JSON.stringify(Array.isArray(payload.enrolledCourseIds) ? payload.enrolledCourseIds : []);
     const activeCourseId = payload.activeCourseId || null;
@@ -119,13 +124,8 @@ export function handleSaveUserData(req, res) {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(user_id) DO UPDATE SET
         role = excluded.role,
-        credits = excluded.credits,
-        cash = excluded.cash,
         tier = excluded.tier,
         tier_progress = excluded.tier_progress,
-        students_taught = excluded.students_taught,
-        total_credits_earned = excluded.total_credits_earned,
-        total_cash_earned = excluded.total_cash_earned,
         avatar = excluded.avatar,
         enrolled_course_ids = excluded.enrolled_course_ids,
         active_course_id = excluded.active_course_id,
@@ -141,11 +141,141 @@ export function handleSaveUserData(req, res) {
     return res.json({
       success: true,
       message: 'User data synced successfully',
+      credits,
       updatedAt: now
     });
   } catch (err) {
     console.error('Save user data error:', err);
     return res.status(500).json({ error: 'Failed to save user data.' });
+  }
+}
+
+// -------------------------------------------------------------
+// ATOMIC COURSE ENROLLMENT (POST /api/courses/:id/enroll)
+// -------------------------------------------------------------
+export async function handleEnrollCourse(req, res) {
+  try {
+    const userId = req.user.id;
+    const { id: courseId } = req.params;
+    const { type = 'credits' } = req.body || {};
+
+    const course = db.prepare('SELECT * FROM courses WHERE id = ?').get(courseId);
+    if (!course) {
+      return res.status(404).json({ error: 'Course not found.' });
+    }
+
+    if (type === 'credits') {
+      const result = await executeAtomicEnrollment({
+        userId,
+        courseId,
+        creditPrice: course.credit_price || 0,
+        courseTitle: course.title
+      });
+
+      if (!result.success) {
+        return res.status(400).json(result);
+      }
+      return res.json(result);
+    } else {
+      // Cash payment enrollment
+      const fee = course.cash_fee || 0;
+      const row = db.prepare('SELECT cash, enrolled_course_ids, ledger FROM user_data WHERE user_id = ?').get(userId);
+      if (!row) return res.status(400).json({ error: 'User wallet not found.' });
+
+      let enrolled = [];
+      try { enrolled = JSON.parse(row.enrolled_course_ids || '[]'); } catch { }
+      if (enrolled.includes(courseId)) {
+        return res.json({ success: true, message: 'Already enrolled!' });
+      }
+
+      if (row.cash < fee) {
+        return res.status(400).json({ error: 'Insufficient INR balance.' });
+      }
+
+      const newCash = row.cash - fee;
+      enrolled.push(courseId);
+      const now = new Date().toISOString();
+      const txId = 'tx_' + Date.now();
+
+      let ledger = [];
+      try { ledger = JSON.parse(row.ledger || '[]'); } catch { }
+      ledger.unshift({
+        id: txId,
+        type: 'spend',
+        title: `Paid Learner Fee for "${course.title}"`,
+        amount: `-₹${fee}`,
+        date: 'Just now'
+      });
+
+      db.prepare(`
+        UPDATE user_data
+        SET cash = ?, enrolled_course_ids = ?, active_course_id = ?, ledger = ?, updated_at = ?
+        WHERE user_id = ?
+      `).run(newCash, JSON.stringify(enrolled), courseId, JSON.stringify(ledger.slice(0, 100)), now, userId);
+
+      return res.json({
+        success: true,
+        message: `Successfully enrolled in "${course.title}"!`,
+        cash: newCash
+      });
+    }
+  } catch (err) {
+    console.error('Enroll course error:', err);
+    return res.status(500).json({ error: 'Failed to process enrollment.' });
+  }
+}
+
+// -------------------------------------------------------------
+// ATOMIC TEACHING SESSION RECORDING (POST /api/user/teach)
+// -------------------------------------------------------------
+export async function handleTeachSession(req, res) {
+  try {
+    const userId = req.user.id;
+    const { studentName = 'Alex Rivera', skillSubject = 'Fullstack Microservices', idempotencyKey } = req.body || {};
+    const earnedCredits = 50;
+    const earnedCash = 2975;
+    const result = await executeAtomicCreditEarning({
+      userId,
+      amount: earnedCredits,
+      cashAmount: earnedCash,
+      title: `Taught student ${studentName}: "${skillSubject}"`,
+      idempotencyKey
+    });
+    return res.json(result);
+  } catch (err) {
+    console.error('Teach session error:', err);
+    return res.status(500).json({ error: 'Failed to record teaching session.' });
+  }
+}
+
+// -------------------------------------------------------------
+// ATOMIC SPONSOR CLAIM (POST /api/user/sponsor-claim)
+// -------------------------------------------------------------
+export async function handleClaimSponsor(req, res) {
+  try {
+    const userId = req.user.id;
+    const { sponsorId, bonusCredits = 50, brand = 'Cloud Infrastructure Partner' } = req.body || {};
+    if (!sponsorId) return res.status(400).json({ error: 'Sponsor ID required.' });
+
+    const row = db.prepare('SELECT claimed_sponsor_ids FROM user_data WHERE user_id = ?').get(userId);
+    let claimed = [];
+    try { claimed = JSON.parse(row?.claimed_sponsor_ids || '[]'); } catch { }
+    if (claimed.includes(sponsorId)) {
+      return res.status(400).json({ error: 'Sponsor reward already claimed.' });
+    }
+    claimed.push(sponsorId);
+    db.prepare('UPDATE user_data SET claimed_sponsor_ids = ? WHERE user_id = ?').run(JSON.stringify(claimed), userId);
+
+    const result = await executeAtomicCreditEarning({
+      userId,
+      amount: bonusCredits,
+      title: `Claimed bonus credits from ${brand}`,
+      idempotencyKey: `sponsor_${userId}_${sponsorId}`
+    });
+    return res.json({ success: true, claimedSponsorIds: claimed, ...result });
+  } catch (err) {
+    console.error('Claim sponsor error:', err);
+    return res.status(500).json({ error: 'Failed to claim sponsor reward.' });
   }
 }
 

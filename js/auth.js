@@ -30,10 +30,22 @@ class AuthManager {
     return Boolean(this.user && (this.user.id || this.user.email));
   }
 
+  getAuthHeaders() {
+    const headers = {};
+    const token = localStorage.getItem('crditeach_token') || sessionStorage.getItem('crditeach_token');
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    return headers;
+  }
+
   // 1. Check current session on load
   async checkSession() {
     try {
-      const res = await fetch('/api/auth/me', { credentials: 'include' });
+      const res = await fetch('/api/auth/me', {
+        headers: this.getAuthHeaders(),
+        credentials: 'include'
+      });
       if (res.ok) {
         const data = await res.json();
         if (data.user) {
@@ -232,10 +244,16 @@ class AuthManager {
   // 5. Logout
   async logout() {
     try {
-      await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: this.getAuthHeaders(),
+        credentials: 'include'
+      });
     } catch (e) { }
 
     localStorage.removeItem(LOCAL_STORAGE_USER_KEY);
+    localStorage.removeItem('crditeach_token');
+    sessionStorage.removeItem('crditeach_token');
     this.user = null;
     this.notify();
   }
@@ -243,7 +261,10 @@ class AuthManager {
   // 6. State Persistence Helpers (Called by state.js)
   async fetchUserData() {
     try {
-      const res = await fetch('/api/user/data', { credentials: 'include' });
+      const res = await fetch('/api/user/data', {
+        headers: this.getAuthHeaders(),
+        credentials: 'include'
+      });
       if (res.ok) {
         const data = await res.json();
         return data.success ? data.userData : null;
@@ -256,7 +277,10 @@ class AuthManager {
     try {
       await fetch('/api/user/data', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...this.getAuthHeaders()
+        },
         credentials: 'include',
         body: JSON.stringify(payload)
       });
@@ -278,7 +302,10 @@ export async function fetchAllCoursesFromServer(searchQuery = '') {
     const url = searchQuery
       ? `/api/courses?q=${encodeURIComponent(searchQuery)}`
       : '/api/courses';
-    const res = await fetch(url, { credentials: 'include' });
+    const res = await fetch(url, {
+      headers: auth.getAuthHeaders(),
+      credentials: 'include'
+    });
     const data = await res.json();
     return data.success ? data.courses : [];
   } catch (err) {
@@ -291,7 +318,10 @@ export async function publishCourseToServer(coursePayload) {
   try {
     const res = await fetch('/api/courses', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...auth.getAuthHeaders()
+      },
       credentials: 'include',
       body: JSON.stringify(coursePayload)
     });
@@ -306,7 +336,10 @@ export async function engageCourseOnServer(courseId, action) {
   try {
     const res = await fetch(`/api/courses/${courseId}/engage`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...auth.getAuthHeaders()
+      },
       body: JSON.stringify({ action }) // 'view' or 'support'
     });
     return await res.json();

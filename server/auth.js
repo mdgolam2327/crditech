@@ -8,6 +8,7 @@ import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 import { db } from './db.js';
 import { sendOtpEmail } from './mailer.js';
+import { verifySupabaseJwt, isSupabaseConfigured } from './supabase.js';
 
 const SESSION_COOKIE_NAME = 'crditeach_session';
 const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -512,8 +513,34 @@ export function handleLogout(req, res) {
 // -------------------------------------------------------------
 // 7. CURRENT USER (GET /api/auth/me)
 // -------------------------------------------------------------
-export function handleGetMe(req, res) {
+export async function handleGetMe(req, res) {
   try {
+    // 1. Check Bearer Token (Supabase JWT)
+    const authHeader = req.headers.authorization || req.headers.Authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.slice(7).trim();
+      const verifiedUser = await verifySupabaseJwt(token);
+      if (verifiedUser) {
+        // Fetch or create profile info from SQLite/Supabase
+        const row = db.prepare('SELECT * FROM users WHERE id = ?').get(verifiedUser.id);
+        return res.json({
+          user: {
+            id: verifiedUser.id,
+            fullName: row?.full_name || verifiedUser.fullName || '',
+            email: verifiedUser.email,
+            phone: row?.phone || verifiedUser.phone || '',
+            address: row?.address || '',
+            avatar: row?.avatar || '',
+            bio: row?.bio || '',
+            skills: row?.skills || '',
+            createdAt: row?.created_at || new Date().toISOString(),
+            lastLoginAt: row?.last_login_at || new Date().toISOString()
+          }
+        });
+      }
+    }
+
+    // 2. Cookie session fallback
     const sessionId = req.cookies?.[SESSION_COOKIE_NAME];
     if (!sessionId) {
       return res.json({ user: null });
@@ -577,10 +604,23 @@ export function handleUpdateAddress(req, res) {
 }
 
 // -------------------------------------------------------------
-// 9. SESSION AUTHENTICATION MIDDLEWARE
+// 9. SESSION & JWT AUTHENTICATION MIDDLEWARE
 // -------------------------------------------------------------
-export function requireAuth(req, res, next) {
+export async function requireAuth(req, res, next) {
   try {
+    // 1. Check Bearer Token (Verified Supabase JWT)
+    const authHeader = req.headers.authorization || req.headers.Authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.slice(7).trim();
+      const verifiedUser = await verifySupabaseJwt(token);
+      if (verifiedUser) {
+        req.userId = verifiedUser.id;
+        req.user = verifiedUser;
+        return next();
+      }
+    }
+
+    // 2. Cookie session fallback
     const sessionId = req.cookies?.[SESSION_COOKIE_NAME];
     if (!sessionId) {
       return res.status(401).json({ error: 'Authentication required. Please log in.' });

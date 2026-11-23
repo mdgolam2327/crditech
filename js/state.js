@@ -239,6 +239,24 @@ class AppState {
     });
 
     this.saveState();
+
+    if (auth.isAuthenticated()) {
+      fetch(`/api/courses/${courseId}/enroll`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...auth.getAuthHeaders()
+        },
+        credentials: 'include',
+        body: JSON.stringify({ type: 'credits' })
+      }).then(r => r.json()).then(data => {
+        if (data.success && typeof data.credits === 'number') {
+          this.user.credits = data.credits;
+          this.saveState(false);
+        }
+      }).catch(() => {});
+    }
+
     return { success: true, message: `Successfully enrolled in "${course.title}" using ${course.creditPrice} Credits!` };
   }
 
@@ -311,6 +329,18 @@ class AppState {
     });
 
     this.saveState();
+
+    if (auth.isAuthenticated()) {
+      fetch('/api/user/teach', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...auth.getAuthHeaders()
+        },
+        credentials: 'include',
+        body: JSON.stringify({ studentName, skillSubject })
+      }).catch(() => {});
+    }
 
     return {
       studentName,

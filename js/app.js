@@ -10,7 +10,7 @@ import { initMarketplace } from './components/marketplace.js';
 import { initClassroom, dockVideoToMiniPlayer, removeFloatingMiniPlayer } from './components/classroom.js';
 import { initSponsorLounge } from './components/sponsorLounge.js';
 import { initAuthModal } from './components/authModal.js';
-import { initProfileView, renderProfileView } from './components/profileView.js';
+import { initProfileView, renderProfileView, openSettingsPage } from './components/profileView.js';
 
 // Global Toast Notification Helper
 window.showToast = function (title, desc, type = 'info') {
@@ -49,6 +49,19 @@ function navigateTo(viewName) {
     sponsors: document.getElementById('view-sponsors'),
     profile: document.getElementById('view-profile')
   };
+
+  if (viewName === 'settings') {
+    if (views['profile']) {
+      Object.values(views).forEach(v => {
+        if (v) v.classList.remove('active-view');
+      });
+      views['profile'].classList.add('active-view');
+      setActiveNavTab('profile');
+      dockVideoToMiniPlayer();
+      openSettingsPage();
+      return;
+    }
+  }
 
   if (!views[viewName]) return;
 
