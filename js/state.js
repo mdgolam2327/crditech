@@ -292,6 +292,24 @@ class AppState {
     });
 
     this.saveState();
+
+    if (auth.isAuthenticated()) {
+      fetch(`/api/courses/${courseId}/enroll`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...auth.getAuthHeaders()
+        },
+        credentials: 'include',
+        body: JSON.stringify({ type: 'cash' })
+      }).then(r => r.json()).then(data => {
+        if (data.success && typeof data.cash === 'number') {
+          this.user.cash = data.cash;
+          this.saveState(false);
+        }
+      }).catch(() => {});
+    }
+
     return { success: true, message: `Payment of ${formatINR(course.cashFee)} processed! Course unlocked in Ad-Free Classroom.` };
   }
 
@@ -438,6 +456,23 @@ class AppState {
     });
 
     this.saveState();
+
+    if (auth.isAuthenticated()) {
+      fetch('/api/user/sponsor-claim', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...auth.getAuthHeaders()
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          sponsorId: sponsor.id,
+          bonusCredits: sponsor.bonusCredits,
+          brand: sponsor.brand
+        })
+      }).catch(() => {});
+    }
+
     return {
       success: true,
       message: `🎉 Claimed ${sponsor.bonusCredits} bonus Credits from ${sponsor.brand}! Your balance is now ${this.user.credits} ₢.`

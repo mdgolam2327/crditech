@@ -245,26 +245,43 @@ app.post('/api/upload-thumbnail', requireAuth, imageUpload.single('thumbnailFile
 });
 
 // Notes & Code Attachment Upload Route (server.js - Requires Authentication)
+const ALLOWED_NOTES_EXTS = new Set([
+  '.pdf', '.zip', '.txt', '.md', '.doc', '.docx', '.json', '.js', '.ts', '.py', '.html', '.css', '.csv', '.png', '.jpg', '.jpeg'
+]);
+
+const notesDir = path.join(uploadDir, 'notes');
+
 const notesStorage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const dir = path.join(__dirname, 'uploads', 'notes');
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    cb(null, dir);
+    if (!fs.existsSync(notesDir)) fs.mkdirSync(notesDir, { recursive: true });
+    cb(null, notesDir);
   },
   filename: (req, file, cb) => {
-    const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const safeName = path.basename(file.originalname).replace(/[^a-zA-Z0-9._-]/g, '_');
     cb(null, `${Date.now()}-${safeName}`);
   }
 });
 
 const uploadNotesFile = multer({
   storage: notesStorage,
-  limits: { fileSize: 50 * 1024 * 1024 } // Max 50MB attachment
+  limits: { fileSize: 50 * 1024 * 1024 }, // Max 50MB attachment
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (ALLOWED_NOTES_EXTS.has(ext)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Unsupported attachment file type.'));
+    }
+  }
 });
 
 app.post('/api/upload-notes-file', requireAuth, uploadNotesFile.single('notesFile'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ success: false, error: 'No notes file uploaded.' });
+  }
+  const resolvedPath = path.resolve(req.file.path);
+  if (!resolvedPath.startsWith(notesDir)) {
+    return res.status(403).json({ success: false, error: 'Invalid file upload destination.' });
   }
   const fileUrl = `/uploads/notes/${req.file.filename}`;
   return res.json({
