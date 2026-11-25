@@ -10,6 +10,7 @@
     "clean": "node reset-data.js"
   },
   "dependencies": {
+    "@supabase/ssr": "^0.12.7",
     "@supabase/supabase-js": "^2.119.2",
     "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",

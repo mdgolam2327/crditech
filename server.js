@@ -32,8 +32,10 @@ import {
   handleGetUserData,
   handleSaveUserData,
   handleGetAllCourses,
+  handleGetCourseById,
   handlePublishCourse,
   handleCourseEngage,
+  handleUpdateLiveStatus,
   handleEndLiveStream,
   handleGetCourseComments,
   handlePostCourseComment,
@@ -64,6 +66,11 @@ import {
   handleTeachSession,
   handleClaimSponsor
 } from './server/userData.js';
+import {
+  handleLiveEvents,
+  handleLiveSignal,
+  handleGetPublicConfig
+} from './server/live.js';
 
 dotenv.config();
 
@@ -295,10 +302,16 @@ app.post('/api/upload-notes-file', requireAuth, uploadNotesFile.single('notesFil
 // =============================================================
 // 4. API Endpoints
 
-// Health Check
+// Health Check & Public Config
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', service: 'Crditeach Platform', timestamp: new Date().toISOString() });
 });
+app.get('/api/config/public', handleGetPublicConfig);
+
+// Real-Time Live Stream Events & WebRTC Signaling
+app.get('/api/live/events', handleLiveEvents);
+app.post('/api/live/signal', handleLiveSignal);
+app.get('/api/live/:streamId', handleGetCourseById);
 
 // Authentication & Verification
 app.get('/api/auth/captcha', handleGetCaptcha);
@@ -318,10 +331,12 @@ app.get('/api/user/data', requireAuth, handleGetUserData);
 app.post('/api/user/data', requireAuth, handleSaveUserData);
 app.post('/api/courses', requireAuth, handlePublishCourse);
 app.get('/api/courses', handleGetAllCourses);
+app.get('/api/courses/:id', handleGetCourseById);
 app.post('/api/courses/:id/enroll', requireAuth, handleEnrollCourse);
 app.post('/api/user/teach', requireAuth, handleTeachSession);
 app.post('/api/user/sponsor-claim', requireAuth, handleClaimSponsor);
 app.post('/api/courses/:id/engage', handleCourseEngage);
+app.post('/api/courses/:id/live-status', requireAuth, handleUpdateLiveStatus);
 app.post('/api/courses/:id/end-live', requireAuth, handleEndLiveStream);
 app.get('/api/courses/:id/comments', handleGetCourseComments);
 app.post('/api/courses/:id/comments', requireAuth, handlePostCourseComment);

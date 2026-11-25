@@ -91,6 +91,15 @@ export function initDatabase() {
       thumbnail TEXT NOT NULL,
       syllabus_json TEXT NOT NULL,
       notes TEXT,
+      tags TEXT DEFAULT '',
+      views INTEGER DEFAULT 0,
+      support_count INTEGER DEFAULT 0,
+      is_live INTEGER DEFAULT 0,
+      stream_id TEXT DEFAULT '',
+      live_status TEXT DEFAULT 'ENDED',
+      stream_started_at TEXT,
+      stream_paused_at TEXT,
+      stream_ended_at TEXT,
       created_at TEXT NOT NULL
     );
 
@@ -215,7 +224,12 @@ export function initDatabase() {
     "ALTER TABLE courses ADD COLUMN tags TEXT DEFAULT '';",
     "ALTER TABLE courses ADD COLUMN views INTEGER DEFAULT 0;",
     "ALTER TABLE courses ADD COLUMN support_count INTEGER DEFAULT 0;",
-    "ALTER TABLE courses ADD COLUMN is_live INTEGER DEFAULT 0;"
+    "ALTER TABLE courses ADD COLUMN is_live INTEGER DEFAULT 0;",
+    "ALTER TABLE courses ADD COLUMN stream_id TEXT DEFAULT '';",
+    "ALTER TABLE courses ADD COLUMN live_status TEXT DEFAULT 'ENDED';",
+    "ALTER TABLE courses ADD COLUMN stream_started_at TEXT;",
+    "ALTER TABLE courses ADD COLUMN stream_paused_at TEXT;",
+    "ALTER TABLE courses ADD COLUMN stream_ended_at TEXT;"
   ];
 
   for (const query of newCourseColumns) {

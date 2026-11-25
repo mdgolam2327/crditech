@@ -13,13 +13,15 @@ import { db } from './db.js';
 dotenv.config();
 
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || '';
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY || '';
+const SUPABASE_JWKS_URL = process.env.SUPABASE_JWKS_URL || '';
 
 export const isSupabaseConfigured = () => {
   return Boolean(
     SUPABASE_URL &&
     SUPABASE_URL.startsWith('http') &&
+    !SUPABASE_URL.includes('https://feadszwahyekczfytyeb.supabase.co') &&
     (SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY)
   );
 };

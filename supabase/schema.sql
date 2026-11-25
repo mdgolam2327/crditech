@@ -73,6 +73,11 @@ CREATE TABLE IF NOT EXISTS public.courses (
   views INTEGER DEFAULT 0 CHECK (views >= 0),
   support_count INTEGER DEFAULT 0 CHECK (support_count >= 0),
   is_live BOOLEAN DEFAULT FALSE,
+  stream_id TEXT DEFAULT '',
+  live_status TEXT DEFAULT 'ENDED' CHECK (live_status IN ('LIVE', 'PAUSED', 'ENDED')),
+  stream_started_at TIMESTAMPTZ,
+  stream_paused_at TIMESTAMPTZ,
+  stream_ended_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
@@ -464,3 +469,20 @@ BEGIN
   );
 END;
 $$;
+
+-- ==============================================================================
+-- REALTIME PUBLICATION & LIVE STREAM INDEXES
+-- ==============================================================================
+CREATE INDEX IF NOT EXISTS idx_courses_stream_id ON public.courses(stream_id);
+CREATE INDEX IF NOT EXISTS idx_courses_live_status ON public.courses(live_status);
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.courses;
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.course_comments;
+  END IF;
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
+

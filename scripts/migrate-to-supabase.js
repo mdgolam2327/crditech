@@ -193,6 +193,11 @@ async function runMigration() {
         views: c.views || 0,
         support_count: c.support_count || 0,
         is_live: Boolean(c.is_live),
+        stream_id: c.stream_id || c.id,
+        live_status: c.live_status || (c.is_live ? 'LIVE' : 'ENDED'),
+        stream_started_at: c.stream_started_at || c.created_at,
+        stream_paused_at: c.stream_paused_at || null,
+        stream_ended_at: c.stream_ended_at || null,
         created_at: c.created_at
       }, { onConflict: 'id' });
 

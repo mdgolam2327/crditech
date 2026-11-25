@@ -5,9 +5,11 @@
  */
 
 import bcrypt from 'bcryptjs';
+import crypto from 'node:crypto';
 import { db } from './db.js';
 import { sendReportNotificationEmail } from './mailer.js';
 import { executeAtomicEnrollment, executeAtomicCreditEarning, isSupabaseConfigured, supabaseAdmin } from './supabase.js';
+import { broadcastLiveUpdate, updateRoomLiveStatus } from './live.js';
 
 // -------------------------------------------------------------
 // GET USER'S PERSISTED DATA (GET /api/user/data)
@@ -279,6 +281,80 @@ export async function handleClaimSponsor(req, res) {
   }
 }
 
+function mapCourseRow(c) {
+  if (!c) return null;
+  const isLive = Boolean(c.is_live);
+  const liveStatus = c.live_status || (isLive ? 'LIVE' : 'ENDED');
+  return {
+    id: c.id,
+    userId: c.user_id,
+    title: c.title,
+    category: c.category,
+    categoryName: c.category_name,
+    desc: c.desc,
+    format: c.format,
+    duration: c.duration,
+    instructor: safeJsonParse(c.instructor_json, { name: 'Creator', avatar: '' }),
+    pricingModel: c.pricing_model,
+    creditPrice: c.credit_price,
+    cashFee: c.cash_fee,
+    rating: c.rating || 5.0,
+    reviewsCount: c.reviews_count || 0,
+    videoUrl: c.video_url,
+    thumbnail: c.thumbnail,
+    syllabus: safeJsonParse(c.syllabus_json, []),
+    notes: c.notes,
+    tags: c.tags || '',
+    views: c.views || 0,
+    supportCount: c.support_count || 0,
+    isLive,
+    streamId: c.stream_id || c.id,
+    liveStatus,
+    streamStartedAt: c.stream_started_at || c.created_at,
+    streamPausedAt: c.stream_paused_at || null,
+    streamEndedAt: c.stream_ended_at || null,
+    createdAt: c.created_at
+  };
+}
+
+async function syncCourseToSupabase(row) {
+  if (!row || !isSupabaseConfigured() || !supabaseAdmin) return;
+  try {
+    await supabaseAdmin.from('courses').upsert({
+      id: row.id,
+      user_id: row.user_id,
+      title: row.title,
+      category: row.category,
+      category_name: row.category_name,
+      desc: row.desc,
+      format: row.format,
+      duration: row.duration,
+      instructor_json: safeJsonParse(row.instructor_json, { name: 'Creator', avatar: '' }),
+      pricing_model: row.pricing_model,
+      credit_price: row.credit_price || 0,
+      cash_fee: row.cash_fee,
+      rating: row.rating || 0,
+      reviews_count: row.reviews_count || 0,
+      video_url: row.video_url || '',
+      thumbnail: row.thumbnail || '',
+      syllabus_json: safeJsonParse(row.syllabus_json, []),
+      notes: row.notes || '',
+      tags: row.tags || '',
+      views: row.views || 0,
+      support_count: row.support_count || 0,
+      is_live: Boolean(row.is_live),
+      stream_id: row.stream_id || row.id,
+      live_status: row.live_status || (row.is_live ? 'LIVE' : 'ENDED'),
+      stream_started_at: row.stream_started_at || row.created_at,
+      stream_paused_at: row.stream_paused_at || null,
+      stream_ended_at: row.stream_ended_at || null,
+      created_at: row.created_at
+    }, { onConflict: 'id' });
+  } catch (err) {
+    console.warn('Supabase course sync warning:', err.message);
+  }
+}
+
 // -------------------------------------------------------------
 // PUBLISH COURSE TO DATABASE (POST /api/courses)
 // -------------------------------------------------------------
@@ -291,6 +367,46 @@ export function handlePublishCourse(req, res) {
       return res.status(400).json({ error: 'Title and category are required.' });
     }
 
+    const isLive = c.isLive ? 1 : 0;
+
+    // Prevent duplicate active live sessions for the same host
+    if (isLive === 1) {
+      const existingActive = db.prepare(
+        "SELECT * FROM courses WHERE user_id = ? AND is_live = 1 AND live_status IN ('LIVE', 'PAUSED') ORDER BY created_at DESC LIMIT 1"
+      ).get(userId);
+
+      if (existingActive && c.forceNew !== true) {
+        const nowResume = new Date().toISOString();
+        db.prepare(
+          "UPDATE courses SET live_status = 'LIVE', duration = 'LIVE', stream_paused_at = NULL WHERE id = ?"
+        ).run(existingActive.id);
+
+        const refreshed = db.prepare('SELECT * FROM courses WHERE id = ?').get(existingActive.id);
+        const mappedExisting = mapCourseRow(refreshed);
+        syncCourseToSupabase(refreshed);
+        updateRoomLiveStatus(mappedExisting.streamId, mappedExisting.id, 'LIVE');
+        broadcastLiveUpdate({
+          type: 'live-status',
+          courseId: mappedExisting.id,
+          streamId: mappedExisting.streamId,
+          liveStatus: 'LIVE',
+          isLive: true,
+          course: mappedExisting,
+          updatedAt: nowResume
+        });
+
+        return res.status(200).json({
+          success: true,
+          resumedExisting: true,
+          message: 'Resumed your existing live session!',
+          courseId: mappedExisting.id,
+          streamId: mappedExisting.streamId,
+          liveStatus: 'LIVE',
+          course: mappedExisting
+        });
+      }
+    }
+
     // Fetch creator's real profile from DB so instructor info always matches their actual profile
     const dbUser = db.prepare('SELECT full_name, avatar FROM users WHERE id = ?').get(userId);
     const realName = (dbUser?.full_name || req.user.fullName || 'Creator').trim();
@@ -301,6 +417,8 @@ export function handlePublishCourse(req, res) {
     ).trim();
 
     const courseId = c.id || `course-${Date.now()}`;
+    const streamId = isLive ? (c.streamId || `stream_${crypto.randomBytes(8).toString('hex')}`) : '';
+    const liveStatus = isLive ? 'LIVE' : 'ENDED';
     const now = new Date().toISOString();
 
     const instructorJson = JSON.stringify({
@@ -315,7 +433,6 @@ export function handlePublishCourse(req, res) {
     const cleanTags = (c.tags || '').toLowerCase().trim();
     const cleanDesc = (c.desc || '').trim();
     const cleanNotes = (c.notes || '').trim();
-    const isLive = c.isLive ? 1 : 0;
 
     db.prepare(`
       INSERT INTO courses (
@@ -323,8 +440,9 @@ export function handlePublishCourse(req, res) {
         format, duration, instructor_json, pricing_model,
         credit_price, cash_fee, rating, reviews_count,
         video_url, thumbnail, syllabus_json, notes,
-        tags, views, support_count, is_live, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        tags, views, support_count, is_live,
+        stream_id, live_status, stream_started_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       courseId,
       userId,
@@ -348,13 +466,35 @@ export function handlePublishCourse(req, res) {
       0, // initial views
       0, // initial support_count
       isLive,
+      streamId,
+      liveStatus,
+      isLive ? now : null,
       now
     );
+
+    const insertedRow = db.prepare('SELECT * FROM courses WHERE id = ?').get(courseId);
+    const mappedCourse = mapCourseRow(insertedRow);
+    syncCourseToSupabase(insertedRow);
+
+    if (isLive) {
+      updateRoomLiveStatus(streamId, courseId, 'LIVE');
+      broadcastLiveUpdate({
+        type: 'live-started',
+        courseId,
+        streamId,
+        liveStatus: 'LIVE',
+        isLive: true,
+        course: mappedCourse
+      });
+    }
 
     return res.status(201).json({
       success: true,
       message: isLive ? 'Live stream started!' : 'Video published to main feed!',
-      courseId
+      courseId,
+      streamId,
+      liveStatus,
+      course: mappedCourse
     });
   } catch (err) {
     console.error('Publish course error:', err);
@@ -378,31 +518,7 @@ export function handleGetAllCourses(req, res) {
     const searchQuery = (req.query.q || '').trim().toLowerCase();
     const rows = db.prepare('SELECT * FROM courses').all();
 
-    let courses = rows.map(c => ({
-      id: c.id,
-      userId: c.user_id,
-      title: c.title,
-      category: c.category,
-      categoryName: c.category_name,
-      desc: c.desc,
-      format: c.format,
-      duration: c.duration,
-      instructor: safeJsonParse(c.instructor_json, { name: 'Creator', avatar: '' }),
-      pricingModel: c.pricing_model,
-      creditPrice: c.credit_price,
-      cashFee: c.cash_fee,
-      rating: c.rating || 5.0,
-      reviewsCount: c.reviews_count || 0,
-      videoUrl: c.video_url,
-      thumbnail: c.thumbnail,
-      syllabus: safeJsonParse(c.syllabus_json, []),
-      notes: c.notes,
-      tags: c.tags || '',
-      views: c.views || 0,
-      supportCount: c.support_count || 0,
-      isLive: Boolean(c.is_live),
-      createdAt: c.created_at
-    }));
+    let courses = rows.map(mapCourseRow);
 
     // 1. Smart Tag & Keyword Filtering
     if (searchQuery) {
@@ -430,6 +546,140 @@ export function handleGetAllCourses(req, res) {
 }
 
 // -------------------------------------------------------------
+// GET SINGLE COURSE OR LIVE STREAM BY ID / STREAM_ID (GET /api/courses/:id)
+// -------------------------------------------------------------
+export async function handleGetCourseById(req, res) {
+  try {
+    const lookupId = req.params.id || req.params.streamId;
+    if (!lookupId) {
+      return res.status(400).json({ error: 'Course or stream ID is required.' });
+    }
+
+    let row = db.prepare('SELECT * FROM courses WHERE id = ? OR stream_id = ?').get(lookupId, lookupId);
+
+    // Check Supabase fallback if not found locally and Supabase is configured
+    if (!row && isSupabaseConfigured() && supabaseAdmin) {
+      const { data: sbRow } = await supabaseAdmin
+        .from('courses')
+        .select('*')
+        .or(`id.eq.${lookupId},stream_id.eq.${lookupId}`)
+        .maybeSingle();
+
+      if (sbRow) {
+        return res.json({
+          success: true,
+          course: {
+            id: sbRow.id,
+            userId: sbRow.user_id,
+            title: sbRow.title,
+            category: sbRow.category,
+            categoryName: sbRow.category_name,
+            desc: sbRow.desc,
+            format: sbRow.format,
+            duration: sbRow.duration,
+            instructor: sbRow.instructor_json || { name: 'Creator', avatar: '' },
+            pricingModel: sbRow.pricing_model,
+            creditPrice: sbRow.credit_price || 0,
+            cashFee: sbRow.cash_fee,
+            rating: sbRow.rating || 5.0,
+            reviewsCount: sbRow.reviews_count || 0,
+            videoUrl: sbRow.video_url || '',
+            thumbnail: sbRow.thumbnail || '',
+            syllabus: sbRow.syllabus_json || [],
+            notes: sbRow.notes || '',
+            tags: sbRow.tags || '',
+            views: sbRow.views || 0,
+            supportCount: sbRow.support_count || 0,
+            isLive: Boolean(sbRow.is_live),
+            streamId: sbRow.stream_id || sbRow.id,
+            liveStatus: sbRow.live_status || (sbRow.is_live ? 'LIVE' : 'ENDED'),
+            streamStartedAt: sbRow.stream_started_at || sbRow.created_at,
+            streamPausedAt: sbRow.stream_paused_at || null,
+            streamEndedAt: sbRow.stream_ended_at || null,
+            createdAt: sbRow.created_at
+          }
+        });
+      }
+    }
+
+    if (!row) {
+      return res.status(404).json({ error: 'Stream or course not found.' });
+    }
+
+    return res.json({ success: true, course: mapCourseRow(row) });
+  } catch (err) {
+    console.error('Get course by ID error:', err);
+    return res.status(500).json({ error: 'Failed to retrieve stream details.' });
+  }
+}
+
+// -------------------------------------------------------------
+// UPDATE LIVE STREAM STATUS: LIVE <-> PAUSED (POST /api/courses/:id/live-status)
+// -------------------------------------------------------------
+export function handleUpdateLiveStatus(req, res) {
+  try {
+    const { id } = req.params;
+    const { status } = req.body || {};
+    const userId = req.user?.id || req.userId;
+
+    if (!userId) {
+      return res.status(401).json({ error: 'Authentication required.' });
+    }
+
+    if (status !== 'LIVE' && status !== 'PAUSED') {
+      return res.status(400).json({ error: 'Invalid live status. Expected LIVE or PAUSED.' });
+    }
+
+    const existing = db.prepare('SELECT * FROM courses WHERE id = ? OR stream_id = ?').get(id, id);
+    if (!existing) {
+      return res.status(404).json({ error: 'Live session not found.' });
+    }
+
+    if (existing.user_id && String(existing.user_id) !== String(userId)) {
+      return res.status(403).json({ error: 'Forbidden: Only the host can change live stream status.' });
+    }
+
+    if (!existing.is_live && existing.live_status === 'ENDED') {
+      return res.status(400).json({ error: 'This live session has already ended.' });
+    }
+
+    const now = new Date().toISOString();
+    const pausedAt = status === 'PAUSED' ? now : null;
+    const durationLabel = status === 'PAUSED' ? 'PAUSED' : 'LIVE';
+
+    db.prepare(`
+      UPDATE courses
+      SET is_live = 1, live_status = ?, duration = ?, stream_paused_at = ?
+      WHERE id = ?
+    `).run(status, durationLabel, pausedAt, existing.id);
+
+    const updatedRow = db.prepare('SELECT * FROM courses WHERE id = ?').get(existing.id);
+    const mapped = mapCourseRow(updatedRow);
+    syncCourseToSupabase(updatedRow);
+    updateRoomLiveStatus(mapped.streamId, mapped.id, status);
+    broadcastLiveUpdate({
+      type: 'live-status',
+      courseId: mapped.id,
+      streamId: mapped.streamId,
+      liveStatus: status,
+      isLive: true,
+      course: mapped
+    });
+
+    return res.json({
+      success: true,
+      courseId: mapped.id,
+      streamId: mapped.streamId,
+      liveStatus: status,
+      course: mapped
+    });
+  } catch (err) {
+    console.error('Update live status error:', err);
+    return res.status(500).json({ error: 'Failed to update live stream status.' });
+  }
+}
+
+// -------------------------------------------------------------
 // END LIVE STREAM & MOVE TO MAIN FEED (POST /api/courses/:id/end-live)
 // -------------------------------------------------------------
 export function handleEndLiveStream(req, res) {
@@ -442,47 +692,53 @@ export function handleEndLiveStream(req, res) {
       return res.status(401).json({ error: 'Authentication required to end this live stream.' });
     }
 
-    const tableInfo = db.prepare(`PRAGMA table_info(courses)`).all();
-    const colNames = tableInfo.map(c => c.name);
-
-    const videoCol = colNames.includes('video_url')
-      ? 'video_url'
-      : (colNames.includes('videoUrl') ? 'videoUrl' : null);
-
-    if (!videoCol) {
-      db.exec(`ALTER TABLE courses ADD COLUMN video_url TEXT`);
-    }
-    const targetVideoCol = videoCol || 'video_url';
-
-    const userCol = colNames.includes('user_id') ? 'user_id' : 'userId';
-    const liveCol = colNames.includes('is_live') ? 'is_live' : 'isLive';
-
-    const existingCourse = db.prepare(`SELECT id, ${userCol} AS ownerId FROM courses WHERE id = ?`).get(id);
+    const existingCourse = db.prepare('SELECT * FROM courses WHERE id = ? OR stream_id = ?').get(id, id);
 
     // If the old stream ID was wiped from DB during a clean reset, gracefully succeed so UI clears it
     if (!existingCourse) {
       return res.json({ success: true, message: 'Stream session closed.' });
     }
 
-    if (existingCourse.ownerId && String(existingCourse.ownerId) !== String(userId)) {
+    if (existingCourse.user_id && String(existingCourse.user_id) !== String(userId)) {
       return res.status(403).json({ error: 'Not authorized to end this stream.' });
     }
 
-    if (recordedVideoUrl) {
-      db.prepare(`
-        UPDATE courses 
-        SET ${liveCol} = 0, format = 'Recorded Live', duration = ?, ${targetVideoCol} = ?
-        WHERE id = ?
-      `).run(duration || 'Recorded Stream', recordedVideoUrl, id);
-    } else {
-      db.prepare(`
-        UPDATE courses 
-        SET ${liveCol} = 0, format = 'Recorded Live', duration = 'Recorded Stream'
-        WHERE id = ?
-      `).run(id);
-    }
+    const now = new Date().toISOString();
+    const finalVideoUrl = recordedVideoUrl || existingCourse.video_url || '';
 
-    return res.json({ success: true, message: 'Live ended and published to main feed!' });
+    db.prepare(`
+      UPDATE courses
+      SET is_live = 0,
+          live_status = 'ENDED',
+          format = 'Recorded Live',
+          duration = ?,
+          video_url = ?,
+          stream_ended_at = ?
+      WHERE id = ?
+    `).run(duration || 'Recorded Stream', finalVideoUrl, now, existingCourse.id);
+
+    const updatedRow = db.prepare('SELECT * FROM courses WHERE id = ?').get(existingCourse.id);
+    const mapped = mapCourseRow(updatedRow);
+    syncCourseToSupabase(updatedRow);
+    updateRoomLiveStatus(mapped.streamId, mapped.id, 'ENDED');
+    broadcastLiveUpdate({
+      type: 'live-ended',
+      courseId: mapped.id,
+      streamId: mapped.streamId,
+      liveStatus: 'ENDED',
+      isLive: false,
+      videoUrl: finalVideoUrl,
+      course: mapped
+    });
+
+    return res.json({
+      success: true,
+      message: 'Live ended and published to main feed!',
+      courseId: mapped.id,
+      streamId: mapped.streamId,
+      liveStatus: 'ENDED',
+      course: mapped
+    });
   } catch (err) {
     console.error('End live stream error:', err);
     return res.status(500).json({ error: err.message || 'Failed to end live stream.' });
@@ -851,6 +1107,9 @@ export function handleUpdateCourse(req, res) {
       : (c.cashFee !== undefined ? (parseFloat(c.cashFee) || 0) : existing.cash_fee);
 
     const isLive = c.isLive !== undefined ? (c.isLive ? 1 : 0) : (existing.is_live ?? 0);
+    const liveStatus = c.liveStatus !== undefined
+      ? c.liveStatus
+      : (isLive ? (existing.live_status === 'PAUSED' ? 'PAUSED' : 'LIVE') : 'ENDED');
     const format = c.format !== undefined ? c.format : (existing.format || 'Standard');
     const duration = c.duration !== undefined ? c.duration : (existing.duration || '00:00');
     const videoUrl = c.videoUrl !== undefined ? c.videoUrl : (existing.video_url || '');
@@ -859,18 +1118,31 @@ export function handleUpdateCourse(req, res) {
       UPDATE courses
       SET title = ?, category = ?, category_name = ?, desc = ?, notes = ?,
           thumbnail = ?, tags = ?, pricing_model = ?, credit_price = ?, cash_fee = ?,
-          is_live = ?, format = ?, duration = ?, video_url = ?
+          is_live = ?, live_status = ?, format = ?, duration = ?, video_url = ?
       WHERE id = ? AND user_id = ?
     `).run(
       title, category, categoryName, desc, notes,
       thumbnail, tags, pricingModel, creditPrice, cashFee,
-      isLive, format, duration, videoUrl,
+      isLive, liveStatus, format, duration, videoUrl,
       courseId, userId
     );
 
+    const updatedRow = db.prepare('SELECT * FROM courses WHERE id = ?').get(courseId);
+    syncCourseToSupabase(updatedRow);
+    const mapped = mapCourseRow(updatedRow);
+    broadcastLiveUpdate({
+      type: 'course-updated',
+      courseId: mapped.id,
+      streamId: mapped.streamId,
+      liveStatus: mapped.liveStatus,
+      isLive: mapped.isLive,
+      course: mapped
+    });
+
     return res.json({
       success: true,
-      message: 'Video updated successfully!'
+      message: 'Video updated successfully!',
+      course: mapped
     });
   } catch (err) {
     console.error('Update course error:', err);
