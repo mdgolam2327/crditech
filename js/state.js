@@ -97,7 +97,9 @@ class AppState {
           avatar: userData.avatar || this.getDefaultUser().avatar
         };
         this.enrolledCourseIds = Array.isArray(userData.enrolledCourseIds) ? userData.enrolledCourseIds : [];
-        this.activeCourseId = userData.activeCourseId || (this.courses[0]?.id || null);
+        if (!this.activeCourseId) {
+          this.activeCourseId = userData.activeCourseId || (this.courses[0]?.id || null);
+        }
         this.ledger = Array.isArray(userData.ledger) ? userData.ledger : [];
         if (Array.isArray(userData.claimedSponsorIds)) {
           this.sponsors.forEach(s => {
@@ -432,7 +434,7 @@ class AppState {
   }
 
   async recordCourseView(courseId) {
-    const course = this.courses.find(c => c.id === courseId);
+    const course = this.courses.find(c => String(c.id) === String(courseId));
     if (course) {
       course.views = (course.views || 0) + 1;
     }

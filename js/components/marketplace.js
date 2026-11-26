@@ -8,6 +8,7 @@
 import { state, formatINR } from '../state.js';
 import { auth } from '../auth.js';
 import { openCreatorChannel } from './profileView.js';
+import { stopHostBroadcast } from '../liveStream.js';
 import {
   renderVideoThreeDotMenu,
   bindVideoThreeDotListeners,
@@ -81,13 +82,16 @@ export function initMarketplace(onNavigate) {
             </div>
             <div class="live-shorts-row">
               ${activeLiveItems.map(item => {
-                const isMyLive = auth.isAuthenticated() && (item.userId === auth.user?.id || item.instructor?.name === auth.user?.fullName);
+                const isMyLive = auth.isAuthenticated() && (String(item.userId) === String(auth.user?.id) || item.instructor?.name === auth.user?.fullName);
+                const isPaused = item.liveStatus === 'PAUSED';
                 return `
-                  <div class="short-live-card is-streaming" data-short-id="${item.id}" style="position: relative;">
+                  <div class="short-live-card is-streaming" data-short-id="${item.id}" data-stream-id="${item.streamId || item.id}" style="position: relative;">
                     <img src="${item.thumbnail}" alt="${item.title}" class="short-live-thumb" />
                     <div class="short-live-overlay">
                       <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
-                        <span class="short-badge-live">● LIVE NOW</span>
+                        <span class="short-badge-live" style="${isPaused ? 'background: rgba(217, 119, 6, 0.95);' : ''}">
+                          ${isPaused ? '⏸ PAUSED' : '● LIVE NOW'}
+                        </span>
                         ${isMyLive ? `
                           <button 
                             class="btn-quick-end-live" 
@@ -298,10 +302,13 @@ export function initMarketplace(onNavigate) {
       });
     });
 
-    // Quick End Live button on Marketplace Live Now cards
+    // Quick End Live button on Marketplace Live Now cards (with confirmation!)
     document.querySelectorAll('.btn-quick-end-live').forEach(btn => {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
+        const confirmed = window.confirm('Are you sure you want to permanently end this live stream?');
+        if (!confirmed) return;
+
         const streamId = btn.getAttribute('data-end-id');
         btn.disabled = true;
         btn.textContent = '...';
@@ -310,13 +317,13 @@ export function initMarketplace(onNavigate) {
           if (window.activeLiveRecorder && window.activeLiveRecorder.state !== 'inactive') {
             window.activeLiveRecorder.stop();
           }
+          stopHostBroadcast();
           if (window.activeLocalLiveStream) {
             window.activeLocalLiveStream.getTracks().forEach(t => t.stop());
             window.activeLocalLiveStream = null;
           }
 
-          const headers = { 'Content-Type': 'application/json' };
-          if (auth.token) headers['Authorization'] = `Bearer ${auth.token}`;
+          const headers = { 'Content-Type': 'application/json', ...auth.getAuthHeaders() };
 
           const res = await fetch(`/api/courses/${streamId}/end-live`, {
             method: 'POST',
@@ -339,20 +346,20 @@ export function initMarketplace(onNavigate) {
   }
 
   function openVideoInClassroom(courseId) {
-    const course = state.courses.find(c => c.id === courseId);
-    if (!course) return;
-
-    const isFree = course.pricingModel === 'free' || course.creditPrice === 0;
-    const isEnrolled = (state.user?.enrolledCourseIds || []).includes(courseId);
+    const course = state.courses.find(c => String(c.id) === String(courseId) || String(c.streamId) === String(courseId));
+    const resolvedId = course ? course.id : courseId;
+    const isFree = !course || course.pricingModel === 'free' || course.creditPrice === 0 || course.isLive;
+    const isEnrolled = (state.enrolledCourseIds || []).includes(resolvedId);
 
     if (isFree || isEnrolled) {
-      state.activeCourseId = courseId;
-      state.recordCourseView(courseId);
+      state.activeCourseId = resolvedId;
+      state.saveState(false);
+      state.recordCourseView(resolvedId);
       if (navigateCallback) navigateCallback('classroom');
     } else {
-      const res = state.enrollWithCredits(courseId);
+      const res = state.enrollWithCredits(resolvedId);
       if (res.success) {
-        state.recordCourseView(courseId);
+        state.recordCourseView(resolvedId);
         window.showToast('Unlocked!', res.message, 'success');
         if (navigateCallback) navigateCallback('classroom');
       } else {

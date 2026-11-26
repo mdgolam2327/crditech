@@ -12,13 +12,27 @@ import { auth } from '../auth.js';
 import { openCreatorChannel } from './profileView.js';
 import {
   isItemSaved,
+  getSavedPlaylistIds,
   toggleSaveItem,
   downloadMedia,
   openReportModal
 } from './videoActions.js';
+import {
+  startHostBroadcast,
+  pauseHostBroadcast,
+  resumeHostBroadcast,
+  replaceHostBroadcastTracks,
+  stopHostBroadcast,
+  connectViewerToStream,
+  disconnectViewerFromStream,
+  getHostLiveSession
+} from '../liveStream.js';
 
 let navigateCallback = null;
 let activeBottomTab = 'comments';
+let renderedCourseId = null;
+let renderedIsLive = false;
+let fetchingCourseId = null;
 
 const DISLIKED_VIDEOS_KEY = 'crditeach_disliked_video_ids';
 const LIKED_VIDEOS_KEY = 'crditeach_liked_video_ids';
@@ -61,28 +75,131 @@ function saveCourseComment(courseId, commentObj) {
 export function initClassroom(onNavigate) {
   navigateCallback = onNavigate;
   state.subscribe(() => {
-    // Avoid interrupting an active live video element unnecessarily
     const liveVid = document.getElementById('classroom-main-video');
-    if (liveVid && liveVid.srcObject && document.getElementById('view-classroom')?.classList.contains('active-view')) {
+    const isClassroomActive = document.getElementById('view-classroom')?.classList.contains('active-view');
+    const targetId = state.activeCourseId;
+    const currentCourse = state.courses.find(c => String(c.id) === String(targetId));
+    // Only skip re-render if the SAME live video element is already actively playing/broadcasting
+    if (
+      isClassroomActive &&
+      liveVid &&
+      liveVid.srcObject &&
+      renderedCourseId &&
+      String(renderedCourseId) === String(targetId) &&
+      Boolean(currentCourse?.isLive) === renderedIsLive
+    ) {
       return;
     }
     renderClassroom();
   });
+
+  window.addEventListener('crditeach:live-update', (ev) => {
+    const payload = ev.detail;
+    if (!payload || !renderedCourseId) return;
+    if (String(payload.courseId) === String(renderedCourseId) || String(payload.streamId) === String(renderedCourseId)) {
+      const isClassroomActive = document.getElementById('view-classroom')?.classList.contains('active-view');
+      if (payload.liveStatus === 'ENDED' && isClassroomActive) {
+        renderedIsLive = false;
+        renderClassroom(renderedCourseId);
+      } else if (isClassroomActive) {
+        updateLiveStatusBadgesInDom(payload.liveStatus || 'LIVE');
+      }
+    }
+  });
+
   renderClassroom();
 }
 
-export function renderClassroom() {
+function updateLiveStatusBadgesInDom(liveStatus) {
+  const hostBadge = document.getElementById('host-live-status-badge');
+  const viewerBadge = document.getElementById('viewer-live-status-badge');
+  const toggleBtn = document.getElementById('btn-live-toggle-pause');
+  const hostPausedOverlay = document.getElementById('host-paused-overlay');
+
+  if (hostBadge) {
+    if (liveStatus === 'PAUSED') {
+      hostBadge.style.background = 'rgba(217, 119, 6, 0.94)';
+      hostBadge.innerHTML = '<span style="width: 8px; height: 8px; border-radius: 50%; background: #fff; display: inline-block;"></span> STREAM PAUSED';
+    } else {
+      hostBadge.style.background = 'rgba(220, 38, 38, 0.92)';
+      hostBadge.innerHTML = '<span style="width: 8px; height: 8px; border-radius: 50%; background: #fff; display: inline-block;"></span> LIVE BROADCASTING';
+    }
+  }
+  if (viewerBadge) {
+    if (liveStatus === 'PAUSED') {
+      viewerBadge.style.background = 'rgba(217, 119, 6, 0.94)';
+      viewerBadge.innerHTML = '<span style="width: 8px; height: 8px; border-radius: 50%; background: #fff; display: inline-block;"></span> PAUSED';
+    } else {
+      viewerBadge.style.background = 'rgba(220, 38, 38, 0.92)';
+      viewerBadge.innerHTML = '<span style="width: 8px; height: 8px; border-radius: 50%; background: #fff; display: inline-block;"></span> LIVE';
+    }
+  }
+  if (toggleBtn) {
+    toggleBtn.textContent = liveStatus === 'PAUSED' ? '▶ Resume Live' : '⏸ Pause Live';
+  }
+  if (hostPausedOverlay) {
+    hostPausedOverlay.style.display = liveStatus === 'PAUSED' ? 'flex' : 'none';
+  }
+}
+
+export function renderClassroom(explicitCourseId = null) {
   const mount = document.getElementById('classroom-mount') || document.getElementById('view-classroom');
   if (!mount) return;
 
-  // Resolve active course accurately (including newly created live sessions)
-  const activeCourse =
-    state.courses.find(c => String(c.id) === String(state.activeCourseId)) ||
+  if (explicitCourseId) {
+    state.activeCourseId = explicitCourseId;
+  }
+
+  const targetId = explicitCourseId || state.activeCourseId;
+
+  // Resolve active course accurately by ID or streamId
+  let activeCourse =
+    (targetId
+      ? state.courses.find(c => String(c.id) === String(targetId) || String(c.streamId) === String(targetId))
+      : null) ||
     state.courses.find(c => c.isLive) ||
     state.courses[0] ||
     null;
 
+  // If a specific course/stream ID was requested but isn't in local state yet, fetch directly from server
+  if (targetId && (!activeCourse || (String(activeCourse.id) !== String(targetId) && String(activeCourse.streamId) !== String(targetId)))) {
+    if (fetchingCourseId !== String(targetId)) {
+      fetchingCourseId = String(targetId);
+      mount.innerHTML = `
+        <div style="max-width: 640px; margin: 60px auto; text-align: center; padding: 48px 24px; background: var(--bg-card); border: 1px solid var(--border-glass); border-radius: 18px;">
+          <div style="font-size: 2.2rem; margin-bottom: 12px;">📡</div>
+          <h2 style="color: var(--text-pure); margin-bottom: 8px;">Loading Stream...</h2>
+          <p style="color: var(--text-secondary); font-size: 0.9rem;">Retrieving stream details from server.</p>
+        </div>
+      `;
+      fetch(`/api/courses/${encodeURIComponent(targetId)}`, {
+        headers: auth.getAuthHeaders(),
+        credentials: 'include'
+      })
+        .then(r => r.json())
+        .then(data => {
+          fetchingCourseId = null;
+          if (data.success && data.course) {
+            const idx = state.courses.findIndex(c => String(c.id) === String(data.course.id));
+            if (idx !== -1) state.courses[idx] = data.course;
+            else state.courses.unshift(data.course);
+            state.activeCourseId = data.course.id;
+            renderClassroom(data.course.id);
+          } else {
+            state.activeCourseId = null;
+            renderClassroom();
+          }
+        })
+        .catch(() => {
+          fetchingCourseId = null;
+        });
+      return;
+    }
+  }
+
   if (!activeCourse) {
+    renderedCourseId = null;
+    renderedIsLive = false;
     mount.innerHTML = `
       <div style="max-width: 640px; margin: 60px auto; text-align: center; padding: 48px 24px; background: var(--bg-card); border: 1px solid var(--border-glass); border-radius: 18px;">
         <div style="font-size: 2.6rem; margin-bottom: 12px;">🎬</div>
@@ -100,6 +217,9 @@ export function renderClassroom() {
     });
     return;
   }
+
+  renderedCourseId = activeCourse.id;
+  renderedIsLive = Boolean(activeCourse.isLive);
 
   const creatorName = activeCourse.instructor?.name || 'Creator';
   const isCurrentUserVideo =
@@ -140,9 +260,10 @@ export function renderClassroom() {
   const isDummyNotes = cleanNotes.startsWith('// Taught on Crditeach by ');
   const realNotes = isDummyNotes ? '' : cleanNotes;
 
-  const hasLiveStream = Boolean(activeCourse.isLive && window.activeLocalLiveStream);
+  const liveStatus = activeCourse.liveStatus || (activeCourse.isLive ? 'LIVE' : 'ENDED');
+  const isPaused = activeCourse.isLive && liveStatus === 'PAUSED';
   const hasRecordedFile = Boolean(activeCourse.videoUrl && activeCourse.videoUrl.trim());
-  const canRenderVideoElement = hasLiveStream || hasRecordedFile || (activeCourse.isLive && isCurrentUserVideo);
+  const canRenderVideoElement = activeCourse.isLive || hasRecordedFile;
 
   mount.innerHTML = `
     <div style="max-width: 1120px; margin: 0 auto; padding: 20px 16px 70px;">
@@ -166,18 +287,30 @@ export function renderClassroom() {
               id="classroom-main-video"
               ${hasRecordedFile && !activeCourse.isLive ? `src="${activeCourse.videoUrl}"` : ''}
               poster="${activeCourse.thumbnail || ''}"
-              ${activeCourse.isLive ? 'autoplay muted playsinline' : 'controls playsinline'}
+              ${activeCourse.isLive ? (isCurrentUserVideo ? 'autoplay muted playsinline' : 'autoplay playsinline controls') : 'controls playsinline'}
               style="width: 100%; height: 100%; object-fit: contain; background: #000; display: block;"
             ></video>
 
             ${activeCourse.isLive && isCurrentUserVideo ? `
-              <!-- Top-Left LIVE Indicator -->
-              <div style="position: absolute; top: 14px; left: 14px; display: inline-flex; align-items: center; gap: 6px; background: rgba(220, 38, 38, 0.92); color: #fff; font-size: 0.76rem; font-weight: 800; padding: 5px 12px; border-radius: 999px; letter-spacing: 0.5px; z-index: 15;">
+              <!-- Top-Left LIVE / PAUSED Indicator -->
+              <div id="host-live-status-badge" style="position: absolute; top: 14px; left: 14px; display: inline-flex; align-items: center; gap: 6px; background: ${isPaused ? 'rgba(217, 119, 6, 0.94)' : 'rgba(220, 38, 38, 0.92)'}; color: #fff; font-size: 0.76rem; font-weight: 800; padding: 5px 12px; border-radius: 999px; letter-spacing: 0.5px; z-index: 15;">
                 <span style="width: 8px; height: 8px; border-radius: 50%; background: #fff; display: inline-block;"></span>
-                LIVE BROADCASTING
+                ${isPaused ? 'STREAM PAUSED' : 'LIVE BROADCASTING'}
               </div>
 
-              <!-- Bottom Overlay Controls: Camera | Share Screen | Screen + Facecam | End Live -->
+              <!-- Host Paused Center Overlay (Quick Resume) -->
+              <div id="host-paused-overlay" style="display: ${isPaused ? 'flex' : 'none'}; position: absolute; inset: 0; background: rgba(2, 6, 23, 0.78); backdrop-filter: blur(4px); flex-direction: column; align-items: center; justify-content: center; gap: 12px; z-index: 12; padding: 20px; text-align: center;">
+                <div style="font-size: 2.2rem;">⏸️</div>
+                <div style="font-size: 1.05rem; font-weight: 700; color: #f8fafc;">Your Live Stream Is Paused</div>
+                <div style="font-size: 0.84rem; color: #94a3b8; max-width: 420px;">
+                  Viewers see your stream as paused. Click below to resume broadcasting in this exact session.
+                </div>
+                <button type="button" id="btn-live-overlay-resume" class="btn btn-primary" style="padding: 10px 22px; font-weight: 700; font-size: 0.9rem;">
+                  ▶ Resume Live Stream
+                </button>
+              </div>
+
+              <!-- Bottom Overlay Controls: Camera | Share Screen | Screen + Facecam | Pause/Resume | End Live -->
               <div style="position: absolute; bottom: 14px; left: 14px; right: 14px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; background: rgba(15, 23, 42, 0.88); backdrop-filter: blur(8px); padding: 10px 14px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.14); z-index: 15;">
                 <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
                   <button type="button" id="btn-live-switch-camera" class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.78rem;">
@@ -189,10 +322,40 @@ export function renderClassroom() {
                   <button type="button" id="btn-live-switch-combo" class="btn btn-primary" style="padding: 6px 12px; font-size: 0.78rem;">
                     🧑‍💻 Screen + Facecam
                   </button>
+                  <button type="button" id="btn-live-toggle-pause" class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.78rem;">
+                    ${isPaused ? '▶ Resume Live' : '⏸ Pause Live'}
+                  </button>
                 </div>
 
                 <button type="button" id="btn-classroom-end-live" style="background: #dc2626; color: #fff; border: none; border-radius: 9px; padding: 8px 16px; font-size: 0.82rem; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;">
                   ⏹ End Live Stream
+                </button>
+              </div>
+            ` : ''}
+
+            ${activeCourse.isLive && !isCurrentUserVideo ? `
+              <!-- Viewer Top-Left LIVE / PAUSED Indicator -->
+              <div id="viewer-live-status-badge" style="position: absolute; top: 14px; left: 14px; display: inline-flex; align-items: center; gap: 6px; background: ${isPaused ? 'rgba(217, 119, 6, 0.94)' : 'rgba(220, 38, 38, 0.92)'}; color: #fff; font-size: 0.76rem; font-weight: 800; padding: 5px 12px; border-radius: 999px; letter-spacing: 0.5px; z-index: 15;">
+                <span style="width: 8px; height: 8px; border-radius: 50%; background: #fff; display: inline-block;"></span>
+                ${isPaused ? 'PAUSED' : 'LIVE'}
+              </div>
+
+              <!-- Viewer Unmute Pill (shown only if autoplay required muting) -->
+              <button type="button" id="btn-viewer-unmute" style="display: none; position: absolute; top: 14px; right: 14px; background: rgba(15, 23, 42, 0.9); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.5); border-radius: 999px; padding: 6px 14px; font-size: 0.78rem; font-weight: 700; cursor: pointer; z-index: 16;">
+                🔊 Click to Unmute
+              </button>
+
+              <!-- Viewer Connecting / Paused / Reconnect Overlay -->
+              <div id="viewer-live-overlay" style="position: absolute; inset: 0; background: rgba(2, 6, 23, 0.8); backdrop-filter: blur(4px); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: #e2e8f0; padding: 24px; text-align: center; z-index: 14;">
+                <div id="viewer-live-overlay-icon" style="font-size: 2.2rem;">${isPaused ? '⏸️' : '📡'}</div>
+                <div id="viewer-live-overlay-title" style="font-size: 1rem; font-weight: 700;">
+                  ${isPaused ? 'Stream Paused by Host' : 'Connecting to Live Broadcast...'}
+                </div>
+                <div id="viewer-live-overlay-msg" style="font-size: 0.84rem; color: #94a3b8; max-width: 420px;">
+                  ${isPaused ? 'The host stepped away momentarily. Playback will resume automatically when they return.' : 'Establishing real-time video feed...'}
+                </div>
+                <button type="button" id="btn-viewer-retry-live" class="btn btn-secondary" style="display: none; padding: 8px 18px; font-size: 0.82rem;">
+                  🔄 Retry Connection
                 </button>
               </div>
             ` : ''}
@@ -201,7 +364,7 @@ export function renderClassroom() {
               <div style="font-size: 2.2rem;">🎥</div>
               <div style="font-size: 0.95rem; color: #e2e8f0; font-weight: 600;">${escapeHtml(activeCourse.title)}</div>
               <div style="font-size: 0.82rem;">
-                ${activeCourse.isLive ? 'Live stream is currently broadcasting.' : 'No video file attached to this session yet.'}
+                No video file attached to this session yet.
               </div>
             </div>
           `}
@@ -522,16 +685,117 @@ function stopLiveCanvasMixer() {
 function attachClassroomListeners(course, creatorName, resolvedAvatar, isOwner) {
   const mainVideoEl = document.getElementById('classroom-main-video');
 
-  // Attach active Camera or Screen Share stream immediately when Live
+  // Attach Host or Viewer Live Stream playback
   if (course.isLive && mainVideoEl) {
-    if (window.activeLocalLiveStream) {
-      mainVideoEl.srcObject = window.activeLocalLiveStream;
-      mainVideoEl.muted = true;
-      mainVideoEl.play().catch(err => console.warn('Live play retry:', err));
-    } else if (isOwner) {
-      // Auto-start camera if owner opened their live room without an active stream
-      switchLiveBroadcastSource('camera');
+    if (isOwner) {
+      disconnectViewerFromStream();
+      const currentLiveStatus = course.liveStatus || 'LIVE';
+
+      if (window.activeLocalLiveStream && window.activeLocalLiveStream.getTracks().some(t => t.readyState === 'live')) {
+        mainVideoEl.srcObject = window.activeLocalLiveStream;
+        mainVideoEl.muted = true;
+        mainVideoEl.play().catch(err => console.warn('Live play retry:', err));
+
+        if (currentLiveStatus === 'PAUSED') {
+          window.activeLocalLiveStream.getTracks().forEach(t => { t.enabled = false; });
+          updateLiveStatusBadgesInDom('PAUSED');
+        } else {
+          startHostBroadcast({
+            courseId: course.id,
+            streamId: course.streamId || course.id,
+            stream: window.activeLocalLiveStream
+          });
+        }
+      } else if (currentLiveStatus !== 'PAUSED') {
+        // Auto-start camera if owner opened their active live room without an active stream
+        switchLiveBroadcastSource('camera');
+      } else {
+        updateLiveStatusBadgesInDom('PAUSED');
+      }
+    } else {
+      // Viewer mode: Connect via WebRTC to Host's active broadcast
+      const overlay = document.getElementById('viewer-live-overlay');
+      const overlayIcon = document.getElementById('viewer-live-overlay-icon');
+      const overlayTitle = document.getElementById('viewer-live-overlay-title');
+      const overlayMsg = document.getElementById('viewer-live-overlay-msg');
+      const retryBtn = document.getElementById('btn-viewer-retry-live');
+      const unmuteBtn = document.getElementById('btn-viewer-unmute');
+
+      const startViewerConnection = () => {
+        connectViewerToStream({
+          courseId: course.id,
+          streamId: course.streamId || course.id,
+          liveStatus: course.liveStatus || 'LIVE',
+          onStatusChange: (status, message) => {
+            if (status === 'paused') {
+              updateLiveStatusBadgesInDom('PAUSED');
+              if (overlay) overlay.style.display = 'flex';
+              if (overlayIcon) overlayIcon.textContent = '⏸️';
+              if (overlayTitle) overlayTitle.textContent = 'Stream Paused by Host';
+              if (overlayMsg) overlayMsg.textContent = message || 'Waiting for host to resume...';
+              if (retryBtn) retryBtn.style.display = 'none';
+            } else if (status === 'ended') {
+              if (overlay) overlay.style.display = 'flex';
+              if (overlayIcon) overlayIcon.textContent = '⏹️';
+              if (overlayTitle) overlayTitle.textContent = 'Live Stream Ended';
+              if (overlayMsg) overlayMsg.textContent = message || 'This live session has ended.';
+              if (retryBtn) retryBtn.style.display = 'none';
+            } else if (status === 'connecting' || status === 'waiting') {
+              updateLiveStatusBadgesInDom('LIVE');
+              if (overlay) overlay.style.display = 'flex';
+              if (overlayIcon) overlayIcon.textContent = '📡';
+              if (overlayTitle) overlayTitle.textContent = status === 'waiting' ? 'Waiting for Host Signal...' : 'Connecting to Live Broadcast...';
+              if (overlayMsg) overlayMsg.textContent = message || 'Establishing real-time video feed...';
+              if (retryBtn) retryBtn.style.display = status === 'waiting' ? 'inline-flex' : 'none';
+            } else if (status === 'playing') {
+              updateLiveStatusBadgesInDom('LIVE');
+              if (overlay) overlay.style.display = 'none';
+              if (retryBtn) retryBtn.style.display = 'none';
+            }
+          },
+          onStreamReady: async (remoteStream) => {
+            const vid = document.getElementById('classroom-main-video');
+            if (!vid) return;
+            vid.srcObject = remoteStream;
+            vid.muted = false;
+            try {
+              await vid.play();
+              if (unmuteBtn) unmuteBtn.style.display = 'none';
+            } catch {
+              // Browser autoplay policy blocked unmuted playback -> start muted & offer 1-click unmute
+              vid.muted = true;
+              vid.play().catch(() => {});
+              if (unmuteBtn) unmuteBtn.style.display = 'inline-flex';
+            }
+            if (overlay) overlay.style.display = 'none';
+          },
+          onError: (errMsg) => {
+            if (overlay) overlay.style.display = 'flex';
+            if (overlayIcon) overlayIcon.textContent = '⚠️';
+            if (overlayTitle) overlayTitle.textContent = 'Connection Notice';
+            if (overlayMsg) overlayMsg.textContent = errMsg || 'Unable to connect to live broadcast.';
+            if (retryBtn) retryBtn.style.display = 'inline-flex';
+          }
+        });
+      };
+
+      unmuteBtn?.addEventListener('click', () => {
+        const vid = document.getElementById('classroom-main-video');
+        if (vid) {
+          vid.muted = false;
+          vid.play().catch(() => {});
+        }
+        unmuteBtn.style.display = 'none';
+      });
+
+      retryBtn?.addEventListener('click', () => {
+        startViewerConnection();
+      });
+
+      startViewerConnection();
     }
+  } else {
+    disconnectViewerFromStream();
   }
 
   // Switch between: 'camera' | 'screen' | 'combo' (Screen + Circular Facecam Overlay)
@@ -635,6 +899,20 @@ function attachClassroomListeners(course, creatorName, resolvedAvatar, isOwner) 
         window.activeLiveRecorder = rec;
       } catch {}
 
+      // Push live tracks immediately to connected WebRTC viewers
+      const activeHost = getHostLiveSession();
+      if (activeHost.courseId && String(activeHost.courseId) === String(course.id)) {
+        await replaceHostBroadcastTracks(finalOutputStream);
+      } else {
+        await startHostBroadcast({
+          courseId: course.id,
+          streamId: course.streamId || course.id,
+          stream: finalOutputStream
+        });
+      }
+      course.liveStatus = 'LIVE';
+      updateLiveStatusBadgesInDom('LIVE');
+
       const toastLabels = {
         camera: ['📷 Camera Active', 'Switched to camera mode.'],
         screen: ['🖥️ Sharing Screen', 'Your full screen is now live!'],
@@ -650,8 +928,42 @@ function attachClassroomListeners(course, creatorName, resolvedAvatar, isOwner) 
   document.getElementById('btn-live-switch-screen')?.addEventListener('click', () => switchLiveBroadcastSource('screen'));
   document.getElementById('btn-live-switch-combo')?.addEventListener('click', () => switchLiveBroadcastSource('combo'));
 
-  // End Live Stream & Save Recorded Video permanently
+  async function handleHostResumeClick() {
+    const ok = await resumeHostBroadcast(course);
+    if (ok) {
+      course.liveStatus = 'LIVE';
+      const vid = document.getElementById('classroom-main-video');
+      if (vid && window.activeLocalLiveStream) {
+        vid.srcObject = window.activeLocalLiveStream;
+        vid.muted = true;
+        vid.play().catch(() => {});
+      }
+      updateLiveStatusBadgesInDom('LIVE');
+    }
+  }
+
+  document.getElementById('btn-live-overlay-resume')?.addEventListener('click', handleHostResumeClick);
+  document.getElementById('btn-live-toggle-pause')?.addEventListener('click', async () => {
+    const currentStatus = getHostLiveSession().liveStatus === 'PAUSED' || course.liveStatus === 'PAUSED'
+      ? 'PAUSED'
+      : 'LIVE';
+    if (currentStatus === 'PAUSED') {
+      await handleHostResumeClick();
+    } else {
+      await pauseHostBroadcast('manual');
+      course.liveStatus = 'PAUSED';
+      updateLiveStatusBadgesInDom('PAUSED');
+      window.showToast?.('⏸ Live Stream Paused', 'Your live session is paused. Click Resume anytime.', 'info');
+    }
+  });
+
+  // End Live Stream & Save Recorded Video permanently (Confirmation required!)
   document.getElementById('btn-classroom-end-live')?.addEventListener('click', async () => {
+    const confirmed = window.confirm(
+      'Are you sure you want to permanently end this live stream?\n\nOnce ended, the session cannot be resumed and will be saved as a recorded video.'
+    );
+    if (!confirmed) return;
+
     const endBtn = document.getElementById('btn-classroom-end-live');
     if (endBtn) {
       endBtn.disabled = true;
@@ -669,7 +981,8 @@ function attachClassroomListeners(course, creatorName, resolvedAvatar, isOwner) 
         });
       }
 
-      // 2. Stop all Camera / Screen / Mixer tracks
+      // 2. Stop WebRTC broadcast & Camera / Screen / Mixer tracks
+      stopHostBroadcast();
       stopLiveCanvasMixer();
       if (window.activeLocalLiveStream) {
         window.activeLocalLiveStream.getTracks().forEach(t => t.stop());
@@ -685,13 +998,11 @@ function attachClassroomListeners(course, creatorName, resolvedAvatar, isOwner) 
         if (blob.size > 0) {
           const fd = new FormData();
           fd.append('videoFile', blob, `live-recording-${Date.now()}.webm`);
-          const headers = {};
-          if (auth.token) headers['Authorization'] = `Bearer ${auth.token}`;
 
           const upRes = await fetch('/api/upload-video', {
             method: 'POST',
             credentials: 'include',
-            headers,
+            headers: { ...auth.getAuthHeaders() },
             body: fd
           });
           const upData = await upRes.json();
@@ -702,44 +1013,25 @@ function attachClassroomListeners(course, creatorName, resolvedAvatar, isOwner) 
       }
 
       // 4. Update course record in backend with recordedVideoUrl and isLive = false
-      const headers = { 'Content-Type': 'application/json' };
-      if (auth.token) headers['Authorization'] = `Bearer ${auth.token}`;
+      const authHeaders = { 'Content-Type': 'application/json', ...auth.getAuthHeaders() };
 
       await fetch(`/api/courses/${course.id}/end-live`, {
         method: 'POST',
         credentials: 'include',
-        headers,
+        headers: authHeaders,
         body: JSON.stringify({
           recordedVideoUrl: recordedVideoUrl,
           duration: 'Recorded Stream'
         })
       });
 
-      // Also ensure course metadata is preserved
-      await fetch(`/api/courses/${course.id}`, {
-        method: 'PUT',
-        credentials: 'include',
-        headers,
-        body: JSON.stringify({
-          title: course.title,
-          category: course.category,
-          categoryName: course.categoryName,
-          desc: course.desc || '',
-          notes: course.notes || '',
-          thumbnail: course.thumbnail || '',
-          isLive: false,
-          format: 'Recorded Live',
-          duration: 'Recorded Stream',
-          videoUrl: recordedVideoUrl
-        })
-      });
-
       course.isLive = false;
+      course.liveStatus = 'ENDED';
       course.videoUrl = recordedVideoUrl;
       await state.loadCoursesFromDB();
 
       window.showToast?.('⏹ Live Ended & Saved', 'Your recorded live session is now playable on the feed!', 'success');
-      renderClassroom();
+      renderClassroom(course.id);
     } catch (err) {
       console.error('End live error:', err);
       window.showToast?.('Error', 'Could not finalize live stream.', 'error');
@@ -786,8 +1078,7 @@ function attachClassroomListeners(course, creatorName, resolvedAvatar, isOwner) 
         saveBtn.textContent = '⏳ Uploading...';
       }
 
-      const headers = {};
-      if (auth.token) headers['Authorization'] = `Bearer ${auth.token}`;
+      const headers = { ...auth.getAuthHeaders() };
 
       let newAttachmentLine = '';
       if (file) {
@@ -854,14 +1145,17 @@ function attachClassroomListeners(course, creatorName, resolvedAvatar, isOwner) 
   });
 
   // Follow / Unfollow Creator from Watch View
-  if (!isCurrentUserVideo && course.userId) {
+  if (!isOwner && course.userId) {
     const followBtn = document.getElementById('btn-watch-follow');
     const followSymbol = document.getElementById('watch-follow-symbol');
     const followText = document.getElementById('watch-follow-text');
     const badge = document.getElementById('watch-follower-count-badge');
 
     // Fetch initial follow status & follower count
-    fetch(`/api/users/${encodeURIComponent(course.userId)}/follow-status`, { credentials: 'include' })
+    fetch(`/api/users/${encodeURIComponent(course.userId)}/follow-status`, {
+      headers: auth.getAuthHeaders(),
+      credentials: 'include'
+    })
       .then(r => r.json())
       .then(d => {
         if (d.success) {

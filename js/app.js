@@ -7,10 +7,17 @@ import { state } from './state.js';
 import { auth, publishCourseToServer } from './auth.js';
 import { initNavbar, setActiveNavTab } from './components/navbar.js';
 import { initMarketplace } from './components/marketplace.js';
-import { initClassroom, dockVideoToMiniPlayer, removeFloatingMiniPlayer } from './components/classroom.js';
+import { initClassroom, renderClassroom, dockVideoToMiniPlayer, removeFloatingMiniPlayer } from './components/classroom.js';
 import { initSponsorLounge } from './components/sponsorLounge.js';
 import { initAuthModal } from './components/authModal.js';
 import { initProfileView, renderProfileView, openSettingsPage } from './components/profileView.js';
+import {
+  initLiveRealtimeSync,
+  startHostBroadcast,
+  pauseHostBroadcast,
+  isHostActivelyLive,
+  disconnectViewerFromStream
+} from './liveStream.js';
 
 // Global Toast Notification Helper
 window.showToast = function (title, desc, type = 'info') {
@@ -50,6 +57,17 @@ function navigateTo(viewName) {
     profile: document.getElementById('view-profile')
   };
 
+  const wasClassroomActive = Boolean(views.classroom?.classList.contains('active-view'));
+  const targetIsClassroom = viewName === 'classroom';
+
+  if (wasClassroomActive && !targetIsClassroom) {
+    if (isHostActivelyLive()) {
+      pauseHostBroadcast('navigated-away');
+    } else {
+      disconnectViewerFromStream();
+    }
+  }
+
   if (viewName === 'settings') {
     if (views['profile']) {
       Object.values(views).forEach(v => {
@@ -57,7 +75,7 @@ function navigateTo(viewName) {
       });
       views['profile'].classList.add('active-view');
       setActiveNavTab('profile');
-      dockVideoToMiniPlayer();
+      if (!isHostActivelyLive()) dockVideoToMiniPlayer();
       openSettingsPage();
       return;
     }
@@ -74,7 +92,8 @@ function navigateTo(viewName) {
 
   if (viewName === 'classroom') {
     removeFloatingMiniPlayer(false);
-  } else {
+    renderClassroom(state.activeCourseId);
+  } else if (!isHostActivelyLive()) {
     dockVideoToMiniPlayer();
   }
 
@@ -193,9 +212,26 @@ function setupUploadAndLiveModals() {
     openModal(uploadVideoModal);
   });
 
-  // Open YouTube-style Go Live Modal
+  // Open YouTube-style Go Live Modal (or resume existing active/paused live session!)
   document.getElementById('btn-go-live')?.addEventListener('click', () => {
     uploadDropdownMenu?.classList.remove('open');
+
+    if (auth.isAuthenticated() && auth.user?.id) {
+      const existingLive = state.courses.find(
+        c => c.isLive && String(c.userId) === String(auth.user.id) && c.liveStatus !== 'ENDED'
+      );
+      if (existingLive) {
+        state.activeCourseId = existingLive.id;
+        navigateTo('classroom');
+        window.showToast?.(
+          '📡 Resuming Live Session',
+          'Returning to your active live session so you can resume broadcasting.',
+          'info'
+        );
+        return;
+      }
+    }
+
     openModal(goLiveModal);
     if (typeof window.__startLiveSetupPreview === 'function') {
       window.__startLiveSetupPreview();
@@ -236,8 +272,7 @@ function setupUploadAndLiveModals() {
     const notesFormData = new FormData();
     notesFormData.append('notesFile', fileObj);
 
-    const headers = {};
-    if (auth.token) headers['Authorization'] = `Bearer ${auth.token}`;
+    const headers = { ...auth.getAuthHeaders() };
 
     const notesRes = await fetch('/api/upload-notes-file', {
       method: 'POST',
@@ -732,8 +767,7 @@ function setupUploadAndLiveModals() {
     const formData = new FormData();
     formData.append('thumbnailFile', fileOrBlob, filename);
 
-    const headers = {};
-    if (auth.token) headers['Authorization'] = `Bearer ${auth.token}`;
+    const headers = { ...auth.getAuthHeaders() };
 
     const res = await fetch('/api/upload-thumbnail', {
       method: 'POST',
@@ -916,8 +950,7 @@ function setupUploadAndLiveModals() {
           const formData = new FormData();
           formData.append('videoFile', selectedVideoFile);
 
-          const headers = {};
-          if (auth.token) headers['Authorization'] = `Bearer ${auth.token}`;
+          const headers = { ...auth.getAuthHeaders() };
 
           const uploadRes = await fetch('/api/upload-video', {
             method: 'POST',
@@ -1064,11 +1097,30 @@ function setupUploadAndLiveModals() {
         const liveNotesBadge = document.getElementById('live-notes-file-badge');
         if (liveNotesBadge) liveNotesBadge.style.display = 'none';
 
-        await state.loadCoursesFromDB();
-
         state.activeCourseId = res.courseId;
+        if (res.course) {
+          const existingIdx = state.courses.findIndex(c => String(c.id) === String(res.course.id));
+          if (existingIdx !== -1) state.courses[existingIdx] = res.course;
+          else state.courses.unshift(res.course);
+        }
+
+        await state.loadCoursesFromDB();
+        state.activeCourseId = res.courseId;
+
+        await startHostBroadcast({
+          courseId: res.courseId,
+          streamId: res.streamId || res.courseId,
+          stream: mediaStream
+        });
+
         navigateTo('classroom');
-        window.showToast('🔴 You are LIVE!', 'Your camera/screen is now broadcasting live!', 'success');
+        window.showToast(
+          res.resumedExisting ? '📡 Resumed Live Session!' : '🔴 You are LIVE!',
+          res.resumedExisting
+            ? 'Returned to your existing live broadcast!'
+            : 'Your camera/screen is now broadcasting live!',
+          'success'
+        );
       } else {
         if (window.activeLiveRecorder && window.activeLiveRecorder.state !== 'inactive') {
           window.activeLiveRecorder.stop();
@@ -1087,6 +1139,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   initAuthModal();
   await auth.checkSession();
+  initLiveRealtimeSync();
 
   initNavbar(navigateTo);
   initMarketplace(navigateTo);
